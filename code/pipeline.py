@@ -14,11 +14,9 @@ import asyncio
 import argparse
 import json
 import os
-import re
 import shutil
 import sys
 from datetime import datetime
-from pathlib import Path
 
 import yaml
 from agent_framework.anthropic import ClaudeAgent
@@ -353,14 +351,14 @@ async def run_agent(
 
         # Fallback: use captured ResultMessage from CLI
         if not (input_tokens or output_tokens) and result_msg and result_msg.usage:
-            input_tokens = result_msg.usage.get("input_tokens", 0) or 0
-            output_tokens = result_msg.usage.get("output_tokens", 0) or 0
-
-        if logger:
-            if input_tokens or output_tokens:
-                logger.log(f"--- Stats: {elapsed:.0f}s | input={input_tokens} output={output_tokens} ---")
-            else:
-                logger.log(f"--- Stats: {elapsed:.0f}s ---")
+            ru = result_msg.usage
+            # input_tokens only counts non-cached input; add cache tokens for the real total
+            input_tokens = (
+                (ru.get("input_tokens", 0) or 0)
+                + (ru.get("cache_creation_input_tokens", 0) or 0)
+                + (ru.get("cache_read_input_tokens", 0) or 0)
+            )
+            output_tokens = ru.get("output_tokens", 0) or 0
 
         if tracker:
             tracker.record(call_name or "agent", input_tokens, output_tokens, elapsed)
