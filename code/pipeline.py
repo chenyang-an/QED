@@ -299,7 +299,25 @@ async def run_agent(
     if instructions:
         agent_kwargs["instructions"] = instructions
 
+    # Import ResultMessage to capture usage from the CLI's result event
+    from agent_framework_claude._agent import ResultMessage
+
+    result_msg = None  # Will capture the ResultMessage during streaming
+
     async with ClaudeAgent(default_options=claude_opts, **agent_kwargs) as agent:
+        # Intercept at the client level to capture ResultMessage
+        if hasattr(agent, "_client") and agent._client:
+            original_receive = agent._client.receive_response
+
+            async def _patched_receive():
+                nonlocal result_msg
+                async for message in original_receive():
+                    if isinstance(message, ResultMessage):
+                        result_msg = message
+                    yield message
+
+            agent._client.receive_response = _patched_receive
+
         stream = agent.run(prompt, stream=True)
         async for update in stream:
             if logger and hasattr(update, "contents") and update.contents:
@@ -323,7 +341,7 @@ async def run_agent(
         elapsed = (datetime.now() - start_time).total_seconds()
         final_text = final.text or ""
 
-        # Extract token counts
+        # Extract token counts — try usage_details first, then captured ResultMessage
         input_tokens = 0
         output_tokens = 0
         usage = getattr(final, "usage_details", None)
@@ -333,13 +351,18 @@ async def run_agent(
             output_tokens = (usage.get("output_token_count", 0) if isinstance(usage, dict)
                              else getattr(usage, "output_token_count", 0)) or 0
 
+        # Fallback: use captured ResultMessage from CLI
+        if not (input_tokens or output_tokens) and result_msg and result_msg.usage:
+            input_tokens = result_msg.usage.get("input_tokens", 0) or 0
+            output_tokens = result_msg.usage.get("output_tokens", 0) or 0
+
         if logger:
             if input_tokens or output_tokens:
                 logger.log(f"--- Stats: {elapsed:.0f}s | input={input_tokens} output={output_tokens} ---")
             else:
                 logger.log(f"--- Stats: {elapsed:.0f}s ---")
 
-        if tracker and (input_tokens or output_tokens):
+        if tracker:
             tracker.record(call_name or "agent", input_tokens, output_tokens, elapsed)
 
         return final_text

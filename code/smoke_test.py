@@ -50,7 +50,7 @@ async def main():
     # Test 1: Prompt files exist
     # -------------------------------------------------------
     print("\n=== Test 1: Prompt files ===")
-    prompt_files = ["proof_search.md", "proof_verify.md", "verdict_proof.md"]
+    prompt_files = ["literature_survey.md", "proof_search.md", "proof_verify.md", "verdict_proof.md"]
     for pf in prompt_files:
         exists = os.path.exists(os.path.join(prompts_dir, pf))
         check(f"Prompt {pf} exists", exists)
@@ -59,7 +59,7 @@ async def main():
     # Test 2: Skill files exist
     # -------------------------------------------------------
     print("\n=== Test 2: Skill files ===")
-    skill_files = ["proving_skill.md", "super_math_skill.md"]
+    skill_files = ["super_math_skill.md"]
     for sf in skill_files:
         exists = os.path.exists(os.path.join(skill_dir, sf))
         check(f"Skill {sf} exists", exists)
@@ -70,10 +70,22 @@ async def main():
     print("\n=== Test 3: Prompt loading ===")
     try:
         prompt = load_prompt(
+            prompts_dir, "literature_survey.md",
+            problem_file="/tmp/test_problem.tex",
+            related_info_dir="/tmp/test_output/related_info",
+            output_dir="/tmp/test_output",
+        )
+        check("literature_survey.md renders OK", "test_problem.tex" in prompt)
+    except Exception as e:
+        check("literature_survey.md renders OK", False, str(e))
+
+    try:
+        prompt = load_prompt(
             prompts_dir, "proof_search.md",
             problem_file="/tmp/test_problem.tex",
             proof_file="/tmp/test_proof.md",
             output_dir="/tmp/test_output",
+            related_info_dir="/tmp/test_output/related_info",
             round_num=1,
             proof_status_file="/tmp/test_status.md",
             previous_round_instructions="- This is the first round.",
@@ -89,6 +101,7 @@ async def main():
             problem_file="/tmp/test_problem.tex",
             proof_file="/tmp/test_proof.md",
             output_file="/tmp/test_verify.md",
+            output_dir="/tmp/test_output",
         )
         check("proof_verify.md renders OK", "test_problem.tex" in prompt)
     except Exception as e:
@@ -107,14 +120,11 @@ async def main():
     # Test 4: Skill loading
     # -------------------------------------------------------
     print("\n=== Test 4: Skill loading ===")
-    proving_skill_path = os.path.join(skill_dir, "proving_skill.md")
     math_skill_path = os.path.join(skill_dir, "super_math_skill.md")
     try:
-        with open(proving_skill_path) as f:
-            proving_skill = f.read()
-        proving_skill = proving_skill.replace("{math_skill_file}", math_skill_path)
-        check("Proving skill loads", len(proving_skill) > 100)
-        check("Math skill path substituted", math_skill_path in proving_skill)
+        with open(math_skill_path) as f:
+            math_skill = f.read()
+        check("Math skill loads", len(math_skill) > 100)
     except Exception as e:
         check("Skill loading", False, str(e))
 
