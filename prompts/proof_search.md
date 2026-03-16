@@ -108,9 +108,48 @@ Write a detailed status log to `{proof_status_file}`. Include:
 - For the final approach: a brief summary of why it works
 - Any remaining concerns or potential issues
 
+## Use Computational Tools Freely
+
+You have access to a shell and can run code. **Use computational tools aggressively** to explore, verify, and support your proof work. Do not rely solely on mental calculation — write and run scripts whenever they can help. Save scripts and their output in `{output_dir}/tmp/`.
+
+### Recommended tools and when to use them:
+
+| Tool | Install | Best for |
+|------|---------|----------|
+| **SymPy** (Python) | `pip install sympy` | Symbolic algebra, simplification, solving equations, summation identities, limits, integrals, series expansions, polynomial factoring, checking identities |
+| **SageMath** | `sage` (if available) | Number theory, combinatorics, group theory, algebraic geometry, exact arithmetic, exploring conjectures over finite fields/groups |
+| **NumPy / SciPy** | `pip install numpy scipy` | Numerical spot-checks, matrix computations, eigenvalue verification, numerical integration to sanity-check analytic results |
+| **Matplotlib** | `pip install matplotlib` | Plotting functions/sequences to build geometric intuition, visualizing convergence behavior, spotting patterns |
+| **Z3** (SMT solver) | `pip install z3-solver` | Checking satisfiability of logical/arithmetic constraints, automated verification of small finite cases, finding counterexamples |
+| **itertools / math** | (stdlib) | Brute-force enumeration of small cases, combinatorial checks, exact integer/rational arithmetic |
+| **Mathematica** | `wolfram-script` (if available) | Symbolic computation, closed-form solutions, special function identities |
+
+### When to reach for a tool:
+
+- **Checking algebraic identities or simplifications** — Don't simplify by hand when SymPy can verify it instantly.
+- **Testing conjectures on small cases** — Before proving something for all n, enumerate n = 1..20 computationally.
+- **Verifying combinatorial or number-theoretic claims** — Use SageMath or brute-force Python to check formulas against direct computation.
+- **Exploring when stuck** — Plot functions, compute tables of values, run experiments to build intuition about *why* a statement is true.
+- **Sanity-checking finished proofs** — After completing a proof, numerically verify key claims as a safety net.
+- **Solving auxiliary equations** — If the proof requires finding a specific value, root, or closed form, let SymPy/SageMath find it.
+- **Matrix and linear algebra claims** — Verify rank, determinant, eigenvalue, or invertibility claims computationally.
+
+### Example workflow:
+
+```python
+# Quick SymPy check: is this identity correct?
+from sympy import symbols, simplify, expand
+n, k = symbols('n k', positive=True, integer=True)
+lhs = ...  # your expression
+rhs = ...  # claimed simplification
+print(simplify(lhs - rhs))  # should be 0
+```
+
+**Don't be shy about using tools.** A 5-line Python script that confirms (or refutes) a key step is worth more than 20 minutes of manual algebra. If one tool doesn't work well for your problem, try another.
+
 ## Temporary Files
 
-If you need to create temporary files to help find or develop the proof (e.g., scratch work, exploratory computations, auxiliary notes), save them in:
+If you need to create temporary files to help find or develop the proof (e.g., scratch work, exploratory computations, auxiliary notes, scripts), save them in:
 ```
 {output_dir}/tmp/
 ```

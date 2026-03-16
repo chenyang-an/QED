@@ -124,9 +124,9 @@ Pricing is looked up from `MODEL_PRICING` in `pipeline.py`. Subscription models 
 | Package | Purpose | Install |
 |---------|---------|---------|
 | `pyyaml` | Config file parsing | `pip install pyyaml` |
-| `agent_framework` | ClaudeAgent orchestration | See below |
+| `agent-framework` | ClaudeAgent orchestration | `pip install agent-framework --pre` |
 
-The `agent_framework` package must be importable as `from agent_framework.anthropic import ClaudeAgent`. This is the [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) with the Anthropic/Claude integration. Install per its documentation.
+The `agent_framework` package is from the [Microsoft Agent Framework](https://github.com/microsoft/agent-framework). It provides the `ClaudeAgent` class used to orchestrate all agent calls (`from agent_framework.anthropic import ClaudeAgent`).
 
 ### Claude Provider Setup
 
@@ -170,27 +170,30 @@ claude:
 ## Installation
 
 ```bash
-# 1. Clone or copy the proof_agent directory
+# 1. Install Claude CLI
+npm install -g @anthropic-ai/claude-code
 
-# 2. Create and activate conda environment
+# 2. Verify Claude CLI works standalone
+#    Run `claude` in your terminal and confirm it launches and responds.
+#    If using a subscription, log in via browser when prompted.
+#    If using Bedrock, ensure `aws configure` is set up first.
+#    If using an API key, set ANTHROPIC_API_KEY or configure later in config.yaml.
+claude --version
+
+# 3. Create and activate the agent conda environment
 conda create -n agent python=3.11 -y
 conda activate agent
 
-# 3. Install Python dependencies
+# 4. Install Python dependencies
 pip install pyyaml
+pip install agent-framework --pre
 
-# 4. Install agent_framework (adjust path as needed)
-pip install -e /path/to/agent-framework
-
-# 5. Install Claude CLI
-npm install -g @anthropic-ai/claude-code
-
-# 6. Configure your Claude provider in config.yaml
+# 5. Configure your Claude provider in config.yaml
 #    Edit config.yaml and set `provider` to one of:
 #    "subscription", "bedrock", or "api_key"
 #    Then fill in the corresponding section.
 
-# 7. Run the smoke test to verify everything works
+# 6. Run the smoke test to verify everything works
 conda activate agent
 python code/smoke_test.py
 ```

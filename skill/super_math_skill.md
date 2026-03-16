@@ -236,3 +236,31 @@ Before diving into a proof, ask:
 - Break long proofs into lemmas or claims.
 - Each lemma should have clear hypotheses and a clear conclusion.
 - This makes the proof easier to verify and easier to debug.
+
+---
+
+## VIII. Computational Tools as a Proving Aid
+
+### 36. Use computational tools — don't do everything in your head
+
+You have access to a shell and can run Python, SymPy, SageMath, and other tools. Use them freely:
+
+- **SymPy** for symbolic algebra, simplification, solving equations, series expansions, limits, and verifying identities.
+- **SageMath** for number theory, combinatorics, group theory, polynomial rings, and exact arithmetic.
+- **NumPy/SciPy** for numerical spot-checks, matrix computations, and sanity-checking analytic results.
+- **Z3 (SMT solver)** for checking satisfiability of constraints and finding counterexamples.
+- **Python** for brute-force enumeration of small cases, combinatorial verification, and testing conjectures.
+- **Matplotlib** for plotting functions and sequences to build intuition.
+
+### 37. Compute before you prove
+
+- Before proving a general statement, verify it computationally for small cases (n = 1..20, specific matrices, small graphs, etc.).
+- If computation refutes the claim for some case, you've found a counterexample — no proof is needed (or the statement needs correction).
+- If computation confirms the claim, the pattern in the data often reveals the proof strategy.
+
+### 38. Let tools handle the tedious parts
+
+- Don't simplify complicated expressions by hand when SymPy can do it exactly.
+- Don't compute determinants, eigenvalues, or GCDs manually — use a CAS.
+- Don't enumerate cases by hand when a for-loop can check all of them.
+- After completing a proof, use tools to independently verify key claims as a safety net.

@@ -130,9 +130,34 @@ Write ALL verification results to: `{output_file}`
 2. ...
 ```
 
+## Use Computational Tools to Verify Claims
+
+You have access to a shell and can run code. **You should actively use computational tools to check the proof's claims** rather than relying only on manual inspection. Save scripts and their output in `{output_dir}/tmp/`.
+
+### How to use tools for verification:
+
+- **Check algebraic identities and simplifications** — Use SymPy (`pip install sympy`) to verify that claimed equalities, simplifications, and manipulations are correct. If SymPy says `simplify(lhs - rhs) != 0`, the proof has an error.
+- **Test claims on concrete cases** — Use Python/NumPy/SageMath to evaluate key formulas at specific values and confirm they match what the proof claims.
+- **Verify combinatorial and number-theoretic formulas** — Brute-force check formulas against direct computation for small cases using Python or SageMath.
+- **Check boundary and degenerate cases computationally** — Plug in edge cases (n=0, n=1, empty set, etc.) into the proof's expressions and verify the claimed behavior.
+- **Validate inequality claims** — Use numerical sampling or Z3 (`pip install z3-solver`) to check whether claimed inequalities hold.
+- **Re-derive key computations independently** — If the proof performs a lengthy calculation, redo it in SymPy and compare.
+- **Plot functions** — Use Matplotlib to visualize claims about function behavior (monotonicity, convexity, convergence).
+
+### Example: checking an algebraic claim from a proof
+
+```python
+from sympy import symbols, simplify
+x = symbols('x', real=True)
+# Proof claims that (1+x)^2 - (1 + 2x + x^2) = 0
+print(simplify((1+x)**2 - (1 + 2*x + x**2)))  # Should print 0
+```
+
+**If a computational check contradicts the proof, that is strong evidence of an error — flag it in your verification report.**
+
 ## Temporary Files
 
-If you need to create temporary files to help verify the proof (e.g., checking computations, testing edge cases, working through sub-arguments), save them in:
+If you need to create temporary files to help verify the proof (e.g., checking computations, testing edge cases, running verification scripts), save them in:
 ```
 {output_dir}/tmp/
 ```
@@ -146,3 +171,4 @@ Create this directory if it does not exist. Do NOT place temporary files anywher
 - Check that induction proofs actually invoke the induction hypothesis.
 - A proof that is "almost right" is still FAIL. Mathematical proofs are either correct or incorrect.
 - If you find the proof is correct, say so clearly with a PASS verdict.
+- **Use computational tools to independently verify claims.** Don't just read the proof — test it.
