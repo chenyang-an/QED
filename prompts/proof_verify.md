@@ -134,6 +134,10 @@ Write ALL verification results to: `{output_file}`
 
 You have access to a shell and can run code. **You should actively use computational tools to check the proof's claims** rather than relying only on manual inspection. Save scripts and their output in `{output_dir}/tmp/`.
 
+### ⚠️ Keep tool output concise
+
+Printing large expressions to stdout wastes your context window. Write large results to files in `{output_dir}/tmp/` and print only summaries or booleans. If `len(str(expr)) > 500`, write to file instead of printing.
+
 ### How to use tools for verification:
 
 - **Check algebraic identities and simplifications** — Use SymPy (`pip install sympy`) to verify that claimed equalities, simplifications, and manipulations are correct. If SymPy says `simplify(lhs - rhs) != 0`, the proof has an error.
@@ -150,7 +154,8 @@ You have access to a shell and can run code. **You should actively use computati
 from sympy import symbols, simplify
 x = symbols('x', real=True)
 # Proof claims that (1+x)^2 - (1 + 2x + x^2) = 0
-print(simplify((1+x)**2 - (1 + 2*x + x**2)))  # Should print 0
+result = simplify((1+x)**2 - (1 + 2*x + x**2))
+print("Simplifies to zero:", result == 0)  # Print only the boolean
 ```
 
 **If a computational check contradicts the proof, that is strong evidence of an error — flag it in your verification report.**

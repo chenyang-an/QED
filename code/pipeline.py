@@ -2,12 +2,16 @@
 """
 Proof Agent pipeline: takes a problem.tex (LaTeX) and produces a natural-language proof.
 
-Four-agent pipeline:
-  0. Literature Survey agent — deep-dives into the problem context and related results
-  Then iterative loop:
-  1. Proof Search agent  — writes/refines the proof (informed by the survey)
-  2. Verification agent  — checks the proof for correctness
-  3. Verdict agent       — decides DONE or CONTINUE
+Three-stage pipeline:
+  Stage 0 — Literature Survey agent: deep-dives into the problem context and related results
+  Stage 1 — Proof Search Loop (iterative, up to max_proof_iterations rounds):
+    1a. Proof Search agent  — writes/refines the proof (informed by the survey)
+    1b. Verification agent  — checks the proof for correctness
+    1c. Verdict agent       — decides DONE or CONTINUE
+  Stage 2 — Summary agent: reads all generated files and writes proof_effort_summary.md
+
+Supports resuming interrupted runs: detects prior progress on disk, skips
+completed stages, deletes incomplete rounds, and restores proof.md from backups.
 """
 
 import asyncio
@@ -69,6 +73,9 @@ def make_claude_options(claude_cfg: dict, working_dir: str) -> dict:
         "permission_mode": claude_cfg.get("permission_mode", "bypassPermissions"),
         "cwd": working_dir,
         "env": env,
+        # 1 GB buffer — the default 1 MB is too small for agents that run
+        # symbolic computations producing large expressions.
+        "max_buffer_size": 1000 * 1024 * 1024,
     }
 
 
@@ -91,6 +98,100 @@ def check_prerequisites():
         sys.exit(1)
 
 
+def _file_nonempty(path: str) -> bool:
+    """Return True if *path* exists and has non-whitespace content."""
+    if not os.path.exists(path):
+        return False
+    with open(path) as f:
+        return bool(f.read().strip())
+
+
+def _parse_verdict_from_file(path: str) -> str:
+    """Parse the Overall Verdict from a verification_result.md file.
+
+    Looks for a line containing 'Overall Verdict' with PASS or FAIL.
+    Returns 'PASS', 'FAIL', or 'UNKNOWN'.
+    """
+    with open(path) as f:
+        for line in f:
+            if "overall verdict" in line.lower():
+                upper = line.upper()
+                if "PASS" in upper:
+                    return "PASS"
+                if "FAIL" in upper:
+                    return "FAIL"
+    return "UNKNOWN"
+
+
+def detect_resume_state(output_dir: str) -> tuple[bool, int, bool]:
+    """Scan the output directory for progress from a previous run.
+
+    Returns (skip_survey, start_round, resume_from_verification):
+      - skip_survey: True if the literature survey is already complete.
+      - start_round: the round number to start (or resume) the proof loop from.
+        1 means no prior rounds exist.
+      - resume_from_verification: True if the proof search step already
+        completed for start_round and we should skip straight to verification.
+
+    Side effects:
+      - Deletes the last round directory if proof search did NOT complete
+        (no proof_status.md), and restores proof.md from backup.
+    """
+    # --- Check literature survey completeness ---
+    related_info_dir = os.path.join(output_dir, "related_info")
+    survey_files = ["problem_analysis.md", "related_theorems.md", "proof_strategies.md"]
+    skip_survey = all(
+        _file_nonempty(os.path.join(related_info_dir, f)) for f in survey_files
+    )
+
+    # --- Scan round directories ---
+    verify_dir = os.path.join(output_dir, "verification")
+    if not os.path.isdir(verify_dir):
+        return skip_survey, 1, False
+
+    # Collect round numbers that have a directory
+    round_nums: list[int] = []
+    for name in os.listdir(verify_dir):
+        if name.startswith("round_"):
+            try:
+                round_nums.append(int(name.split("_", 1)[1]))
+            except ValueError:
+                continue
+    if not round_nums:
+        return skip_survey, 1, False
+
+    round_nums.sort()
+    last = round_nums[-1]
+    last_dir = os.path.join(verify_dir, f"round_{last}")
+
+    status_ok = _file_nonempty(os.path.join(last_dir, "proof_status.md"))
+    verify_ok = _file_nonempty(os.path.join(last_dir, "verification_result.md"))
+
+    if status_ok and verify_ok:
+        # Last round is fully complete — resume from the next one.
+        return skip_survey, last + 1, False
+
+    if status_ok and not verify_ok:
+        # Proof search completed but verification didn't — resume this
+        # round from the verification step.  proof.md already contains
+        # the proof search agent's output, so don't touch it.
+        print(f"  Round {last}: proof search complete, verification incomplete — will resume from verification")
+        return skip_survey, last, True
+
+    # Proof search didn't complete — delete the round and restore proof.md.
+    proof_file = os.path.join(output_dir, "proof.md")
+    backup = os.path.join(last_dir, "proof_before_round.md")
+    if os.path.exists(backup):
+        shutil.copy2(backup, proof_file)
+        print(f"  Restored proof.md from round {last} backup")
+
+    shutil.rmtree(last_dir)
+    print(f"  Deleted incomplete round_{last}")
+
+    # Redo this round from scratch.
+    return skip_survey, last, False
+
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -108,8 +209,7 @@ class PipelineLogger:
         self.start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.pid = os.getpid()
 
-        with open(self.history_file, "w") as f:
-            f.write("")
+        # Append to history (not truncate) so resumed runs preserve prior history
         self.append_history(f"{phase} started")
 
     def update_status(self, iteration: int, max_iter: int, step: str, state: str, details: str):
@@ -441,8 +541,18 @@ async def run_proof_loop(
     related_info_dir: str,
     proving_skill: str = "",
     tracker: TokenTracker | None = None,
+    start_round: int = 1,
+    resume_from_verification: bool = False,
 ) -> bool:
     """Run the proof search/verification/verdict loop.
+
+    Args:
+        start_round: Round number to begin from (for resume support).
+            Rounds before this are assumed already complete on disk.
+        resume_from_verification: If True, skip the proof search step for
+            start_round and jump straight to verification (the proof search
+            agent already completed for that round).
+
     Returns True if successful (DONE), False if max iterations reached.
     """
     proof_file = os.path.join(output_dir, "proof.md")
@@ -455,7 +565,23 @@ async def run_proof_loop(
         with open(proof_file, "w") as f:
             f.write("<!-- Proof will be written here by the proof search agent -->\n")
 
-    for i in range(1, max_iterations + 1):
+    # --- Resume check: parse the last complete round's verdict from disk ---
+    if start_round > 1 and not resume_from_verification:
+        prev_complete = start_round - 1
+        prev_verify_file = os.path.join(
+            verify_dir, f"round_{prev_complete}", "verification_result.md",
+        )
+        if _file_nonempty(prev_verify_file):
+            verdict = _parse_verdict_from_file(prev_verify_file)
+            logger.log(f"\n--- Resuming: round {prev_complete} verdict from file = {verdict} ---")
+            logger.append_history(f"Resume: parsed verdict for round {prev_complete} = {verdict}")
+            if verdict == "PASS":
+                logger.finalize(prev_complete, max_iterations, "FINISHED",
+                                "Proof already verified in previous run!")
+                logger.append_history("SUCCESS - Proof already verified (resume check)")
+                return True
+
+    for i in range(start_round, max_iterations + 1):
         round_dir = os.path.join(verify_dir, f"round_{i}")
         os.makedirs(round_dir, exist_ok=True)
         proof_status_file = os.path.join(round_dir, "proof_status.md")
@@ -469,34 +595,46 @@ async def run_proof_loop(
         logger.log(f"========================================")
         logger.append_history(f"Iteration {i} started (round dir: round_{i})")
 
-        # Build previous-round instructions
-        prev_instructions = ""
-        if os.path.exists(prev_verify):
-            prev_instructions += f"- Read the PREVIOUS round's verification result from {prev_verify}.\n"
-        if os.path.exists(prev_proof_status):
-            prev_instructions += f"- Read the PREVIOUS round's proof status from {prev_proof_status}. It contains which approaches were tried and FAILED — do NOT repeat these.\n"
-        if not prev_instructions:
-            prev_instructions = "- This is the first round. No previous round data available.\n"
+        # Check if we should skip proof search for this round (resume case)
+        skip_proof_search = (i == start_round and resume_from_verification)
 
-        # Step 1: Proof search
-        logger.update_status(i, max_iterations, "1/3 Proof Search", "RUNNING", "Running proof search agent...")
-        logger.append_history(f"Iteration {i}: Proof search started")
+        if skip_proof_search:
+            logger.log(f"--- Resuming round {i}: skipping proof search (already complete) ---")
+            logger.append_history(f"Iteration {i}: Proof search SKIPPED (resume)")
+        else:
+            # Build previous-round instructions
+            prev_instructions = ""
+            if os.path.exists(prev_verify):
+                prev_instructions += f"- Read the PREVIOUS round's verification result from {prev_verify}.\n"
+            if os.path.exists(prev_proof_status):
+                prev_instructions += f"- Read the PREVIOUS round's proof status from {prev_proof_status}. It contains which approaches were tried and FAILED — do NOT repeat these.\n"
+            if not prev_instructions:
+                prev_instructions = "- This is the first round. No previous round data available.\n"
 
-        search_prompt = load_prompt(
-            prompts_dir, "proof_search.md",
-            problem_file=problem_file,
-            proof_file=proof_file,
-            output_dir=output_dir,
-            related_info_dir=related_info_dir,
-            round_num=i,
-            proof_status_file=proof_status_file,
-            previous_round_instructions=prev_instructions,
-        )
-        search_prompt += f"\n\nThis is round {i}. Write or refine the proof. If one approach doesn't work after much effort, try a completely different proof strategy."
+            # Back up proof.md before the proof search agent modifies it
+            proof_backup = os.path.join(round_dir, "proof_before_round.md")
+            if os.path.exists(proof_file):
+                shutil.copy2(proof_file, proof_backup)
 
-        await run_agent(claude_opts, search_prompt, logger, instructions=proving_skill or None,
-                        tracker=tracker, call_name=f"Proof Search R{i}")
-        logger.append_history(f"Iteration {i}: Proof search completed")
+            # Step 1: Proof search
+            logger.update_status(i, max_iterations, "1/3 Proof Search", "RUNNING", "Running proof search agent...")
+            logger.append_history(f"Iteration {i}: Proof search started")
+
+            search_prompt = load_prompt(
+                prompts_dir, "proof_search.md",
+                problem_file=problem_file,
+                proof_file=proof_file,
+                output_dir=output_dir,
+                related_info_dir=related_info_dir,
+                round_num=i,
+                proof_status_file=proof_status_file,
+                previous_round_instructions=prev_instructions,
+            )
+            search_prompt += f"\n\nThis is round {i}. Write or refine the proof. If one approach doesn't work after much effort, try a completely different proof strategy."
+
+            await run_agent(claude_opts, search_prompt, logger, instructions=proving_skill or None,
+                            tracker=tracker, call_name=f"Proof Search R{i}")
+            logger.append_history(f"Iteration {i}: Proof search completed")
 
         # Step 2: Verification
         logger.update_status(i, max_iterations, "2/3 Verification", "RUNNING", "Running verification agent...")
@@ -594,6 +732,11 @@ async def main():
     # Token usage tracker — writes TOKEN_USAGE.md after every agent call
     tracker = TokenTracker(output_dir, claude_opts["model"])
 
+    # -------------------------------------------------------
+    # Detect resume state
+    # -------------------------------------------------------
+    skip_survey, start_round, resume_from_verification = detect_resume_state(output_dir)
+
     print("=" * 60)
     print("  Proof Agent Pipeline")
     print("=" * 60)
@@ -601,33 +744,98 @@ async def main():
     print(f"  Output:     {output_dir}")
     print(f"  Max rounds: {max_proof}")
     print(f"  Token log:  {tracker.md_path}")
+    if skip_survey or start_round > 1 or resume_from_verification:
+        print()
+        print("  RESUMING previous run:")
+        if skip_survey:
+            print("    - Literature survey: SKIP (already complete)")
+        if resume_from_verification:
+            print(f"    - Proof loop: resuming round {start_round} from verification step")
+        elif start_round > 1:
+            print(f"    - Proof loop: resuming from round {start_round}")
     print()
 
     # -------------------------------------------------------
     # Stage 0: Literature Survey
     # -------------------------------------------------------
-    print("=" * 60)
-    print("STAGE 0: Literature Survey")
-    print("=" * 60)
-    related_info_dir = await run_literature_survey(
-        output_dir, problem_file, claude_opts, prompts_dir,
-        math_skill=proving_skill, tracker=tracker,
-    )
-    print(f"  Survey saved to: {related_info_dir}")
+    related_info_dir = os.path.join(output_dir, "related_info")
+    if skip_survey:
+        print("=" * 60)
+        print("STAGE 0: Literature Survey  [SKIPPED — already complete]")
+        print("=" * 60)
+        print(f"  Using existing survey at: {related_info_dir}")
+    else:
+        print("=" * 60)
+        print("STAGE 0: Literature Survey")
+        print("=" * 60)
+        related_info_dir = await run_literature_survey(
+            output_dir, problem_file, claude_opts, prompts_dir,
+            math_skill=proving_skill, tracker=tracker,
+        )
+        print(f"  Survey saved to: {related_info_dir}")
 
     # -------------------------------------------------------
     # Stage 1: Proof Search Loop
     # -------------------------------------------------------
     print()
     print("=" * 60)
-    print("STAGE 1: Proof Search")
+    if resume_from_verification:
+        print(f"STAGE 1: Proof Search  [RESUMING round {start_round} from verification]")
+    elif start_round > 1:
+        print(f"STAGE 1: Proof Search  [RESUMING from round {start_round}]")
+    else:
+        print("STAGE 1: Proof Search")
     print("=" * 60)
     ok = await run_proof_loop(
         output_dir, problem_file, claude_opts, prompts_dir,
         max_proof, related_info_dir=related_info_dir,
         proving_skill=proving_skill, tracker=tracker,
+        start_round=start_round,
+        resume_from_verification=resume_from_verification,
     )
 
+    # -------------------------------------------------------
+    # Stage 2: Proof Effort Summary
+    # -------------------------------------------------------
+    summary_file = os.path.join(output_dir, "proof_effort_summary.md")
+
+    if _file_nonempty(summary_file):
+        print()
+        print("=" * 60)
+        print("STAGE 2: Proof Effort Summary  [SKIPPED — already exists]")
+        print("=" * 60)
+        print(f"  Using existing summary at: {summary_file}")
+    else:
+        # Count how many rounds actually exist on disk
+        verify_dir = os.path.join(output_dir, "verification")
+        total_rounds = 0
+        if os.path.isdir(verify_dir):
+            total_rounds = sum(
+                1 for name in os.listdir(verify_dir) if name.startswith("round_")
+            )
+
+        outcome = "PASS — Proof verified successfully" if ok else "FAIL — Maximum iterations reached without a verified proof"
+
+        print()
+        print("=" * 60)
+        print("STAGE 2: Proof Effort Summary")
+        print("=" * 60)
+
+        summary_prompt = load_prompt(
+            prompts_dir, "proof_effort_summary.md",
+            output_dir=output_dir,
+            outcome=outcome,
+            total_rounds=total_rounds,
+            max_rounds=max_proof,
+            summary_file=summary_file,
+        )
+        await run_agent(claude_opts, summary_prompt, tracker=tracker,
+                        call_name="Proof Effort Summary")
+        print(f"  Summary saved to: {summary_file}")
+
+    # -------------------------------------------------------
+    # Done
+    # -------------------------------------------------------
     print()
     print("=" * 60)
     if ok:
@@ -636,6 +844,7 @@ async def main():
         print("  PIPELINE STOPPED — Max iterations reached")
     print("=" * 60)
     print(f"  Proof at:    {os.path.join(output_dir, 'proof.md')}")
+    print(f"  Summary at:  {summary_file}")
     print(f"  Token usage: {tracker.md_path}")
     print(f"  Output:      {output_dir}")
 

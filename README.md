@@ -4,7 +4,7 @@ A multi-agent pipeline that takes a mathematical problem statement in LaTeX and 
 
 ## How It Works
 
-The pipeline runs in two stages:
+The pipeline runs in three stages:
 
 **Stage 0 — Literature Survey.** A survey agent reads the problem and conducts a deep investigation of the mathematical landscape: classifying the problem, identifying applicable theorems, cataloguing proof techniques, and flagging likely dead ends. The results are saved to `related_info/` for the proof agent to reference.
 
@@ -16,7 +16,11 @@ The pipeline runs in two stages:
 
 If the verdict is `DONE`, the pipeline stops. Otherwise the next round begins, with the proof search agent reading the previous round's verification feedback and proof status log to avoid repeating failed approaches.
 
-All agents receive `skill/super_math_skill.md` as a system-level instruction — a 35-principle guide to mathematical proof methodology.
+**Stage 2 — Proof Effort Summary.** After the proof loop finishes (either success or max iterations), a summary agent reads all generated files and writes `proof_effort_summary.md` — a comprehensive report covering the problem, final proof status, round-by-round history, approaches tried, key insights, and resource usage.
+
+All agents receive `skill/super_math_skill.md` as a system-level instruction — a 38-principle guide to mathematical proof methodology.
+
+**Resume support.** If the pipeline is interrupted and re-run with the same output directory, it automatically detects prior progress: skips the literature survey if already complete, deletes any incomplete last round, restores `proof.md` from a backup, and resumes from where it left off.
 
 Token usage is tracked across all agent calls and written to `TOKEN_USAGE.md` (human-readable) and `token_usage.json` (machine-readable) after every call.
 
@@ -36,10 +40,11 @@ proof_agent/
 │   ├── literature_survey.md           # Stage 0: literature survey agent prompt
 │   ├── proof_search.md               # Stage 1, Step 1: proof search agent prompt
 │   ├── proof_verify.md               # Stage 1, Step 2: verification agent prompt
-│   └── verdict_proof.md              # Stage 1, Step 3: verdict agent prompt
+│   ├── verdict_proof.md              # Stage 1, Step 3: verdict agent prompt
+│   └── proof_effort_summary.md       # Stage 2: proof effort summary agent prompt
 │
 └── skill/
-    └── super_math_skill.md            # System prompt: 35 principles for proof construction
+    └── super_math_skill.md            # System prompt: 38 principles for proof construction
 ```
 
 ### Prompt Templates
@@ -52,6 +57,7 @@ Each prompt file in `prompts/` is a Markdown template with `{placeholder}` varia
 | `proof_search.md` | `problem_file`, `proof_file`, `output_dir`, `related_info_dir`, `round_num`, `proof_status_file`, `previous_round_instructions` |
 | `proof_verify.md` | `problem_file`, `proof_file`, `output_file`, `output_dir` |
 | `verdict_proof.md` | `verification_result_file` |
+| `proof_effort_summary.md` | `output_dir`, `outcome`, `total_rounds`, `max_rounds`, `summary_file` |
 
 ## Output Structure
 
@@ -61,6 +67,7 @@ Given an output directory `<output>/`, a complete run produces:
 <output>/
 ├── problem.tex                        # Copy of the input problem
 ├── proof.md                           # The final proof (written/refined by proof search agent)
+├── proof_effort_summary.md            # Stage 2: comprehensive summary of the entire proof effort
 ├── TOKEN_USAGE.md                     # Human-readable token usage summary table
 ├── token_usage.json                   # Machine-readable token usage data
 │
@@ -202,23 +209,26 @@ python code/smoke_test.py
 
 ### Quick Start
 
-```bash
-# Using the shell script (uses conda env "agent")
-bash run.sh /path/to/problem.tex
+1. Place your problem statement in `problem/problem.tex`.
+2. Run the pipeline:
 
-# With a custom output directory
+```bash
+# Uses problem/problem.tex by default
+bash run.sh
+
+# Or specify a custom problem file and/or output directory
 bash run.sh /path/to/problem.tex /path/to/output
 
 # Directly via Python
 python code/pipeline.py \
-    --input /path/to/problem.tex \
-    --output /path/to/output \
+    --input problem/problem.tex \
+    --output proof_output \
     --config config.yaml
 ```
 
 ### Input Format
 
-The input is a single `problem.tex` file containing a mathematical problem statement in LaTeX. For example:
+Place your problem in `problem/problem.tex`. The file should contain a mathematical problem statement in LaTeX. For example:
 
 ```latex
 \begin{problem}
@@ -315,7 +325,7 @@ claude:
           v                                       |
 +-------------------+                             |
 | Proof Search      |  <-- reads related_info/    |
-| Agent             |  <-- reads prev round       |
+| Agent             |  <-- reads prev round       |   Stage 1
 +-------------------+  --> writes proof.md        |
           |                                       |
           v                                       |
@@ -332,5 +342,10 @@ claude:
    DONE    CONTINUE ------> next round -----------+
      |
      v
-  proof.md (final)
++-------------------+
+| Summary Agent     |   Stage 2
++-------------------+
+     |
+     v
+  proof_effort_summary.md
 ```

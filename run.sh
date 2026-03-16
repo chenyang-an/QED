@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PYTHON="$(conda run -n agent which python)"
 
-PROBLEM_FILE="${1:?Usage: bash run.sh <problem.tex> [output_dir]}"
+PROBLEM_FILE="${1:-$SCRIPT_DIR/problem/problem.tex}"
 OUTPUT_DIR="${2:-$SCRIPT_DIR/proof_output}"
 CONFIG="$SCRIPT_DIR/config.yaml"
 
