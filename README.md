@@ -1,6 +1,6 @@
 # Proof Agent
 
-A multi-agent pipeline that takes a mathematical problem statement in LaTeX and produces a rigorous natural-language proof. The pipeline uses Claude as the underlying LLM, orchestrated through the [Agent Framework](https://github.com/microsoft/agent-framework). It certainly perform stronger than chatbot version of various models on math proving tasks, since it uses agentic loops to search and verify math proofs instead of answering question in one shot.
+A multi-agent pipeline that takes a mathematical problem statement in LaTeX and produces a rigorous natural-language proof. The pipeline uses Claude as the underlying LLM, orchestrated through the [Agent Framework](https://github.com/microsoft/agent-framework). It performs stronger than chatbot versions of various models on math proving tasks, since it uses agentic loops to search, decompose, and verify math proofs instead of answering in one shot.
 
 ## How It Works
 
@@ -8,19 +8,22 @@ The pipeline runs in three stages:
 
 **Stage 0 — Literature Survey.** A survey agent reads the problem and first evaluates its difficulty (Easy / Medium / Hard), then conducts an investigation of the mathematical landscape scaled to that difficulty: classifying the problem, identifying applicable theorems, cataloguing proof techniques, and flagging likely dead ends. Easy problems get a brief survey; hard problems get the full treatment. The results are saved to `related_info/` for the proof agent to reference.
 
-**Stage 1 — Proof Search Loop.** An iterative loop of three agents runs up to `max_proof_iterations` rounds (default 9):
+**Stage 1 — Proof Search Loop.** An iterative loop of four agents runs up to `max_proof_iterations` rounds (default 9):
 
-1. **Proof Search Agent** — Reads the problem, the literature survey, and any previous-round feedback. Writes or refines a complete natural-language proof in `proof.md`.
-2. **Verification Agent** — Independently reviews the proof for logical validity, completeness, correctness of cited results, and alignment with the problem statement. Writes a structured verdict to a per-round verification result file.
-3. **Verdict Agent** — Reads the verification result and returns a single word: `DONE` (proof is correct) or `CONTINUE` (try again).
+1. **Proof Search Agent** — Reads the problem, the literature survey, any previous-round feedback, and any human guidance from `human_help/`. Writes or refines a complete natural-language proof in `proof.md`. The agent is warned that its proof will be decomposed into atomic claims and each one verified independently — hand-waving will be caught.
+2. **Decomposition Agent** — Decomposes the proof into numbered **miniclaims** (atomic logical assertions), each with a verbatim miniproof quote, dependency list, and type classification. Also produces a **Proof Architecture** — a hierarchical outline showing how miniclaims group into sub-arguments that prove intermediate results, and how those compose to prove the final claim. Writes `proof_decomposition.md`. No correctness judgment at this step.
+3. **Verification Agent** — Verifies each miniclaim individually (logical validity, mathematical correctness, computational checks via SymPy/Z3/NumPy). Then verifies the hierarchical composition: does each sub-argument's miniclaims actually establish the claimed intermediate result? Do sub-arguments compose correctly to prove the top-level goal? Finally runs global checks (problem-statement integrity, alignment, coverage). Writes `verification_result.md`.
+4. **Verdict Agent** — Reads the verification result and returns a single word: `DONE` (proof is correct) or `CONTINUE` (try again).
 
 If the verdict is `DONE`, the pipeline stops. Otherwise the next round begins, with the proof search agent reading the previous round's verification feedback and proof status log to avoid repeating failed approaches.
 
 **Stage 2 — Proof Effort Summary.** After the proof loop finishes (either success or max iterations), a summary agent reads all generated files and writes `proof_effort_summary.md` — a comprehensive report covering the problem, final proof status, round-by-round history, approaches tried, key insights, and resource usage.
 
-All agents receive `skill/super_math_skill.md` as a system-level instruction — a 38-principle guide to mathematical proof methodology.
+All agents receive `skill/super_math_skill.md` as a system-level instruction — a guide to mathematical proof methodology.
 
-**Resume support.** If the pipeline is interrupted and re-run with the same output directory, it automatically detects prior progress: skips the literature survey if already complete, deletes any incomplete last round, restores `proof.md` from a backup, and resumes from where it left off.
+**Human guidance.** You can drop hints, suggestions, or corrections into `human_help/` at any time during a run. The proof search agent checks this directory at the start of every round and incorporates any guidance it finds.
+
+**Resume support.** If the pipeline is interrupted and re-run with the same output directory, it automatically detects prior progress: skips the literature survey if already complete, detects which step within a round was last completed (proof search, decomposition, or verification), cleans up incomplete state, restores `proof.md` from a backup if needed, and resumes from the exact step where it left off.
 
 Token usage is tracked across all agent calls and written to `TOKEN_USAGE.md` (human-readable) and `token_usage.json` (machine-readable) after every call.
 
@@ -38,13 +41,20 @@ proof_agent/
 │
 ├── prompts/
 │   ├── literature_survey.md           # Stage 0: literature survey agent prompt
-│   ├── proof_search.md               # Stage 1, Step 1: proof search agent prompt
-│   ├── proof_verify.md               # Stage 1, Step 2: verification agent prompt
-│   ├── verdict_proof.md              # Stage 1, Step 3: verdict agent prompt
+│   ├── proof_search.md               # Stage 1, Step 1/4: proof search agent prompt
+│   ├── proof_decompose.md            # Stage 1, Step 2/4: decomposition agent prompt
+│   ├── proof_verify.md               # Stage 1, Step 3/4: verification agent prompt
+│   ├── verdict_proof.md              # Stage 1, Step 4/4: verdict agent prompt
 │   └── proof_effort_summary.md       # Stage 2: proof effort summary agent prompt
 │
+├── problem/
+│   └── problem.tex                    # Placeholder — put your problem statement here
+│
+├── human_help/
+│   └── human_help.md                  # Drop hints/suggestions here during a run
+│
 └── skill/
-    └── super_math_skill.md            # System prompt: 38 principles for proof construction
+    └── super_math_skill.md            # System prompt: principles for proof construction
 ```
 
 ### Prompt Templates
@@ -55,7 +65,8 @@ Each prompt file in `prompts/` is a Markdown template with `{placeholder}` varia
 |--------|-------------|
 | `literature_survey.md` | `problem_file`, `related_info_dir`, `output_dir` |
 | `proof_search.md` | `problem_file`, `proof_file`, `output_dir`, `related_info_dir`, `round_num`, `proof_status_file`, `previous_round_instructions` |
-| `proof_verify.md` | `problem_file`, `proof_file`, `output_file`, `output_dir` |
+| `proof_decompose.md` | `problem_file`, `proof_file`, `output_file`, `output_dir` |
+| `proof_verify.md` | `problem_file`, `proof_file`, `decomposition_file`, `output_file`, `output_dir` |
 | `verdict_proof.md` | `verification_result_file` |
 | `proof_effort_summary.md` | `output_dir`, `outcome`, `total_rounds`, `max_rounds`, `summary_file` |
 
@@ -87,10 +98,14 @@ Given an output directory `<output>/`, a complete run produces:
 │   ├── AUTO_RUN_STATUS.md.history     #   Timestamped event history
 │   ├── AUTO_RUN_LOG.txt               #   Full text log
 │   ├── round_1/
+│   │   ├── proof_before_round.md      #   Backup of proof.md before this round
 │   │   ├── proof_status.md            #   Proof search agent's log of what it tried
+│   │   ├── proof_decomposition.md     #   Decomposition agent's miniclaim breakdown
 │   │   └── verification_result.md     #   Verification agent's structured verdict
 │   ├── round_2/
+│   │   ├── proof_before_round.md
 │   │   ├── proof_status.md
+│   │   ├── proof_decomposition.md
 │   │   └── verification_result.md
 │   └── ...                            #   One directory per round
 │
@@ -104,17 +119,15 @@ Each stage writes three log files:
 | File | Purpose |
 |------|---------|
 | `AUTO_RUN_STATUS.md` | Current status table (iteration, step, state, timestamps, PID). Overwritten each update. |
-| `AUTO_RUN_STATUS.md.history` | Append-only timestamped event log (e.g., "Iteration 2: Proof search started"). |
+| `AUTO_RUN_STATUS.md.history` | Append-only timestamped event log (e.g., "Iteration 2: Decomposition started"). |
 | `AUTO_RUN_LOG.txt` | Full streaming output from all agent calls — tool invocations, text output, token stats. |
 
 ### Token Usage
 
 `TOKEN_USAGE.md` is updated after every agent call and contains:
 
-- **Summary table**: total input/output tokens, total elapsed time, estimated cost, number of agent calls.
-- **Per-call breakdown**: each agent call with its token counts, elapsed time, cumulative totals, and estimated cost.
-
-Pricing is looked up from `MODEL_PRICING` in `pipeline.py`. Subscription models (`opus`, `sonnet`, `haiku`) show `subscription` instead of a dollar amount. API/Bedrock models show USD estimates.
+- **Summary table**: total input/output tokens, total elapsed time, number of agent calls.
+- **Per-call breakdown**: each agent call with its token counts, elapsed time, and cumulative totals.
 
 `token_usage.json` contains the same data in JSON format for programmatic consumption.
 
@@ -210,8 +223,9 @@ python code/smoke_test.py
 
 ### Quick Start
 
-1. Place your problem statement in `problem/problem.tex`.
-2. Run the pipeline:
+1. Place your problem statement in `problem/problem.tex` (a placeholder file is provided — replace its contents with your actual problem).
+2. Optionally drop hints or guidance into `human_help/` if you have ideas about the proof approach.
+3. Run the pipeline:
 
 ```bash
 # Uses problem/problem.tex by default
@@ -244,6 +258,17 @@ Prove that there exists $c \in (0,1)$ such that
 
 The file can use any LaTeX formatting — theorem environments, custom macros, etc. The agents read the raw LaTeX source directly.
 
+### Human Guidance
+
+You can influence the proof search by placing files in `human_help/`. The proof search agent reads this directory at the start of every round. Use it to:
+
+- Suggest a proof strategy or technique
+- Point out an error you noticed in a previous round's proof
+- Provide a hint about a key lemma or theorem
+- Steer the agent away from a dead-end approach
+
+Any text file in the directory will be read. You can add or update files while the pipeline is running — the agent will pick up changes at the start of the next round.
+
 ### Smoke Test
 
 The smoke test validates the setup without making expensive agent calls (except one short connectivity check):
@@ -265,7 +290,7 @@ It checks:
 While the pipeline is running, you can check progress:
 
 ```bash
-# Current status
+# Current status (shows current step: 1/4, 2/4, 3/4, or 4/4)
 cat <output>/verification/AUTO_RUN_STATUS.md
 
 # Event history
@@ -279,6 +304,10 @@ tail -f <output>/verification/AUTO_RUN_LOG.txt
 
 # Literature survey log
 cat <output>/literature_survey_log/AUTO_RUN_LOG.txt
+
+# Check a specific round's decomposition or verification
+cat <output>/verification/round_1/proof_decomposition.md
+cat <output>/verification/round_1/verification_result.md
 ```
 
 ## Configuration Reference
@@ -287,7 +316,7 @@ cat <output>/literature_survey_log/AUTO_RUN_LOG.txt
 
 ```yaml
 pipeline:
-  max_proof_iterations: 9    # Maximum rounds of proof search/verify/verdict
+  max_proof_iterations: 9    # Maximum rounds of proof search/decompose/verify/verdict
                               # before the pipeline stops. Default: 9.
 
 claude:
@@ -335,19 +364,26 @@ This pipeline runs Claude CLI with `permission_mode: "bypassPermissions"` (confi
           |                                       |
           v                                       |
 +-------------------+                             |
-| Proof Search      |  <-- reads related_info/    |
-| Agent             |  <-- reads prev round       |   Stage 1
-+-------------------+  --> writes proof.md        |
+| 1/4 Proof Search  |  <-- reads related_info/    |
+| Agent             |  <-- reads prev round       |
+|                   |  <-- reads human_help/       |
++-------------------+  --> writes proof.md         |
+          |                                       |
+          v                                       |
++-------------------+                             |   Stage 1
+| 2/4 Decomposition |                             |   (up to 9
+| Agent             |                             |    rounds)
++-------------------+  --> proof_decomposition.md  |
           |                                       |
           v                                       |
 +-------------------+                             |
-| Verification      |                             |
+| 3/4 Verification  |  <-- reads decomposition    |
 | Agent             |                             |
-+-------------------+  --> verification_result.md |
++-------------------+  --> verification_result.md  |
           |                                       |
           v                                       |
 +-------------------+                             |
-| Verdict Agent     |                             |
+| 4/4 Verdict Agent |                             |
 +-------------------+                             |
      |         |                                  |
    DONE    CONTINUE ------> next round -----------+
