@@ -8,12 +8,20 @@ The pipeline runs in three stages:
 
 **Stage 0 — Literature Survey.** A survey agent reads the problem and first evaluates its difficulty (Easy / Medium / Hard), then conducts an investigation of the mathematical landscape scaled to that difficulty: classifying the problem, identifying applicable theorems, cataloguing proof techniques, and flagging likely dead ends. Easy problems get a brief survey; hard problems get the full treatment. The results are saved to `related_info/` for the proof agent to reference.
 
-**Stage 1 — Proof Search Loop.** An iterative loop of four agents runs up to `max_proof_iterations` rounds (default 9):
+**Stage 1 — Proof Search Loop.** An iterative loop runs up to `max_proof_iterations` rounds (default 9). The number of steps per round adapts to the problem's difficulty (as classified in Stage 0):
+
+**Medium / Hard problems — 4 steps per round:**
 
 1. **Proof Search Agent** — Reads the problem, the literature survey, any previous-round feedback, and any human guidance from `human_help/`. Writes or refines a complete natural-language proof in `proof.md`. The agent is warned that its proof will be decomposed into atomic claims and each one verified independently — hand-waving will be caught.
 2. **Decomposition Agent** — Decomposes the proof into numbered **miniclaims** (atomic logical assertions), each with a verbatim miniproof quote, dependency list, and type classification. Also produces a **Proof Architecture** — a hierarchical outline showing how miniclaims group into sub-arguments that prove intermediate results, and how those compose to prove the final claim. Writes `proof_decomposition.md`. No correctness judgment at this step.
 3. **Verification Agent** — Verifies each miniclaim individually (logical validity, mathematical correctness, computational checks via SymPy/Z3/NumPy). Then verifies the hierarchical composition: does each sub-argument's miniclaims actually establish the claimed intermediate result? Do sub-arguments compose correctly to prove the top-level goal? Finally runs global checks (problem-statement integrity, alignment, coverage). Writes `verification_result.md`.
 4. **Verdict Agent** — Reads the verification result and returns a single word: `DONE` (proof is correct) or `CONTINUE` (try again).
+
+**Easy problems — 3 steps per round:**
+
+1. **Proof Search Agent** — Same as above.
+2. **Verification Agent (lightweight)** — Skips decomposition entirely. Does a direct read-through of the proof checking logical flow, mathematical correctness, completeness, and problem-statement integrity. A computational spot-check is still performed. Writes `verification_result.md`.
+3. **Verdict Agent** — Same as above.
 
 If the verdict is `DONE`, the pipeline stops. Otherwise the next round begins, with the proof search agent reading the previous round's verification feedback and proof status log to avoid repeating failed approaches.
 
@@ -41,10 +49,11 @@ proof_agent/
 │
 ├── prompts/
 │   ├── literature_survey.md           # Stage 0: literature survey agent prompt
-│   ├── proof_search.md               # Stage 1, Step 1/4: proof search agent prompt
-│   ├── proof_decompose.md            # Stage 1, Step 2/4: decomposition agent prompt
-│   ├── proof_verify.md               # Stage 1, Step 3/4: verification agent prompt
-│   ├── verdict_proof.md              # Stage 1, Step 4/4: verdict agent prompt
+│   ├── proof_search.md               # Stage 1: proof search agent prompt
+│   ├── proof_decompose.md            # Stage 1: decomposition agent prompt (medium/hard)
+│   ├── proof_verify.md               # Stage 1: full verification agent prompt (medium/hard)
+│   ├── proof_verify_easy.md          # Stage 1: lightweight verification prompt (easy)
+│   ├── verdict_proof.md              # Stage 1: verdict agent prompt
 │   └── proof_effort_summary.md       # Stage 2: proof effort summary agent prompt
 │
 ├── problem/
@@ -67,6 +76,7 @@ Each prompt file in `prompts/` is a Markdown template with `{placeholder}` varia
 | `proof_search.md` | `problem_file`, `proof_file`, `output_dir`, `related_info_dir`, `round_num`, `proof_status_file`, `previous_round_instructions` |
 | `proof_decompose.md` | `problem_file`, `proof_file`, `output_file`, `output_dir` |
 | `proof_verify.md` | `problem_file`, `proof_file`, `decomposition_file`, `output_file`, `output_dir` |
+| `proof_verify_easy.md` | `problem_file`, `proof_file`, `output_file`, `output_dir` |
 | `verdict_proof.md` | `verification_result_file` |
 | `proof_effort_summary.md` | `output_dir`, `outcome`, `total_rounds`, `max_rounds`, `summary_file` |
 
@@ -100,12 +110,12 @@ Given an output directory `<output>/`, a complete run produces:
 │   ├── round_1/
 │   │   ├── proof_before_round.md      #   Backup of proof.md before this round
 │   │   ├── proof_status.md            #   Proof search agent's log of what it tried
-│   │   ├── proof_decomposition.md     #   Decomposition agent's miniclaim breakdown
+│   │   ├── proof_decomposition.md     #   Decomposition agent's miniclaim breakdown (medium/hard only)
 │   │   └── verification_result.md     #   Verification agent's structured verdict
 │   ├── round_2/
 │   │   ├── proof_before_round.md
 │   │   ├── proof_status.md
-│   │   ├── proof_decomposition.md
+│   │   ├── proof_decomposition.md     #   (absent for easy problems)
 │   │   └── verification_result.md
 │   └── ...                            #   One directory per round
 │
@@ -350,49 +360,57 @@ This pipeline runs Claude CLI with `permission_mode: "bypassPermissions"` (confi
 ## Architecture
 
 ```
-                          problem.tex
-                              |
-                              v
-                 +------------------------+
-                 |  Literature Survey      |   Stage 0
-                 |  Agent                  |
-                 +------------------------+
-                              |
-                    related_info/ (4 files)
-                              |
-          +-------------------+-------------------+
-          |                                       |
-          v                                       |
-+-------------------+                             |
-| 1/4 Proof Search  |  <-- reads related_info/    |
-| Agent             |  <-- reads prev round       |
-|                   |  <-- reads human_help/       |
-+-------------------+  --> writes proof.md         |
-          |                                       |
-          v                                       |
-+-------------------+                             |   Stage 1
-| 2/4 Decomposition |                             |   (up to 9
-| Agent             |                             |    rounds)
-+-------------------+  --> proof_decomposition.md  |
-          |                                       |
-          v                                       |
-+-------------------+                             |
-| 3/4 Verification  |  <-- reads decomposition    |
-| Agent             |                             |
-+-------------------+  --> verification_result.md  |
-          |                                       |
-          v                                       |
-+-------------------+                             |
-| 4/4 Verdict Agent |                             |
-+-------------------+                             |
-     |         |                                  |
-   DONE    CONTINUE ------> next round -----------+
-     |
-     v
-+-------------------+
-| Summary Agent     |   Stage 2
-+-------------------+
-     |
-     v
-  proof_effort_summary.md
+                           problem.tex
+                               |
+                               v
+                  +------------------------+
+                  |  Literature Survey      |   Stage 0
+                  |  Agent                  |   (classifies difficulty)
+                  +------------------------+
+                               |
+                     related_info/ (4 files)
+                               |
+                     difficulty = Easy / Medium / Hard
+                               |
+           +-------------------+-------------------+
+           |                                       |
+           v                                       |
+ +-------------------+                             |
+ | Proof Search      |  <-- reads related_info/    |
+ | Agent             |  <-- reads prev round       |
+ |                   |  <-- reads human_help/       |
+ +-------------------+  --> writes proof.md         |
+           |                                       |
+           +------------------+                    |
+           |                  |                    |
+     Medium / Hard          Easy                   |
+           |                  |                    |   Stage 1
+           v                  |                    |   (up to 9
+ +-------------------+       |                    |    rounds)
+ | Decomposition     |       |                    |
+ | Agent             |       |                    |
+ +-------------------+       |                    |
+           |                  |                    |
+           v                  v                    |
+ +-------------------+  +------------------+       |
+ | Full Verification |  | Easy Verification|       |
+ | Agent             |  | Agent            |       |
+ +-------------------+  +------------------+       |
+           |                  |                    |
+           +------------------+                    |
+           |                                       |
+           v                                       |
+ +-------------------+                             |
+ | Verdict Agent     |                             |
+ +-------------------+                             |
+      |         |                                  |
+    DONE    CONTINUE ------> next round -----------+
+      |
+      v
+ +-------------------+
+ | Summary Agent     |   Stage 2
+ +-------------------+
+      |
+      v
+   proof_effort_summary.md
 ```

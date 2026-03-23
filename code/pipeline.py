@@ -124,6 +124,28 @@ def _parse_verdict_from_file(path: str) -> str:
     return "UNKNOWN"
 
 
+def _parse_difficulty(output_dir: str) -> str:
+    """Parse the difficulty classification from difficulty_evaluation.md.
+
+    Looks for a line like '## Classification: Easy' (or Medium / Hard).
+    Returns 'easy', 'medium', 'hard', or 'unknown'.
+    """
+    path = os.path.join(output_dir, "related_info", "difficulty_evaluation.md")
+    if not os.path.exists(path):
+        return "unknown"
+    with open(path) as f:
+        for line in f:
+            if "classification" in line.lower():
+                upper = line.upper()
+                if "EASY" in upper:
+                    return "easy"
+                if "MEDIUM" in upper:
+                    return "medium"
+                if "HARD" in upper:
+                    return "hard"
+    return "unknown"
+
+
 def detect_resume_state(output_dir: str) -> tuple[bool, int, str]:
     """Scan the output directory for progress from a previous run.
 
@@ -555,6 +577,7 @@ async def run_proof_loop(
     tracker: TokenTracker | None = None,
     start_round: int = 1,
     resume_from_step: str = "proof_search",
+    difficulty: str = "unknown",
 ) -> bool:
     """Run the proof search/decomposition/verification/verdict loop.
 
@@ -565,9 +588,13 @@ async def run_proof_loop(
             "proof_search"  — start the round from scratch
             "decomposition" — skip proof search, start from decomposition
             "verification"  — skip proof search + decomposition, start from verification
+        difficulty: Problem difficulty from the literature survey
+            ("easy", "medium", "hard", or "unknown"). Easy problems skip
+            decomposition and use a lightweight verification prompt.
 
     Returns True if successful (DONE), False if max iterations reached.
     """
+    easy_mode = (difficulty == "easy")
     proof_file = os.path.join(output_dir, "proof.md")
     verify_dir = os.path.join(output_dir, "verification")
 
@@ -613,8 +640,11 @@ async def run_proof_loop(
         skip_proof_search = (i == start_round and resume_from_step in ("decomposition", "verification"))
         skip_decomposition = (i == start_round and resume_from_step == "verification")
 
+        # Step labels depend on whether we're in easy mode (3 steps) or normal (4 steps)
+        total_steps = 3 if easy_mode else 4
+
         # ------------------------------------------------------------------
-        # Step 1/4: Proof Search
+        # Step 1: Proof Search
         # ------------------------------------------------------------------
         if skip_proof_search:
             logger.log(f"--- Resuming round {i}: skipping proof search (already complete) ---")
@@ -634,7 +664,7 @@ async def run_proof_loop(
             if os.path.exists(proof_file):
                 shutil.copy2(proof_file, proof_backup)
 
-            logger.update_status(i, max_iterations, "1/4 Proof Search", "RUNNING", "Running proof search agent...")
+            logger.update_status(i, max_iterations, f"1/{total_steps} Proof Search", "RUNNING", "Running proof search agent...")
             logger.append_history(f"Iteration {i}: Proof search started")
 
             search_prompt = load_prompt(
@@ -653,54 +683,79 @@ async def run_proof_loop(
                             tracker=tracker, call_name=f"Proof Search R{i}")
             logger.append_history(f"Iteration {i}: Proof search completed")
 
-        # ------------------------------------------------------------------
-        # Step 2/4: Proof Decomposition
-        # ------------------------------------------------------------------
-        if skip_decomposition:
-            logger.log(f"--- Resuming round {i}: skipping decomposition (already complete) ---")
-            logger.append_history(f"Iteration {i}: Decomposition SKIPPED (resume)")
-        else:
-            logger.update_status(i, max_iterations, "2/4 Decomposition", "RUNNING", "Running decomposition agent...")
-            logger.append_history(f"Iteration {i}: Decomposition started")
+        if easy_mode:
+            # ==============================================================
+            # EASY MODE: skip decomposition, use lightweight verification
+            # ==============================================================
 
-            decomp_prompt = load_prompt(
-                prompts_dir, "proof_decompose.md",
+            # Step 2/3: Easy Verification
+            logger.update_status(i, max_iterations, "2/3 Verification (easy)", "RUNNING", "Running easy verification agent...")
+            logger.append_history(f"Iteration {i}: Easy verification started")
+
+            verify_prompt = load_prompt(
+                prompts_dir, "proof_verify_easy.md",
                 problem_file=problem_file,
                 proof_file=proof_file,
-                output_file=decomp_file,
+                output_file=verify_result_file,
                 output_dir=output_dir,
             )
-            decomp_prompt += f"\n\nThis is round {i}. Write decomposition to {decomp_file}."
+            verify_prompt += f"\n\nThis is round {i}. Write results to {verify_result_file}."
 
-            await run_agent(claude_opts, decomp_prompt, logger,
-                            tracker=tracker, call_name=f"Decomposition R{i}")
-            logger.append_history(f"Iteration {i}: Decomposition completed")
+            await run_agent(claude_opts, verify_prompt, logger,
+                            tracker=tracker, call_name=f"Verification (easy) R{i}")
+            logger.append_history(f"Iteration {i}: Easy verification completed")
 
-        # ------------------------------------------------------------------
-        # Step 3/4: Verification
-        # ------------------------------------------------------------------
-        logger.update_status(i, max_iterations, "3/4 Verification", "RUNNING", "Running verification agent...")
-        logger.append_history(f"Iteration {i}: Verification started")
+            # Step 3/3: Verdict
+            logger.update_status(i, max_iterations, "3/3 Checking Verdict", "RUNNING", "Analyzing verification results...")
+            logger.append_history(f"Iteration {i}: Checking verdict")
 
-        verify_prompt = load_prompt(
-            prompts_dir, "proof_verify.md",
-            problem_file=problem_file,
-            proof_file=proof_file,
-            decomposition_file=decomp_file,
-            output_file=verify_result_file,
-            output_dir=output_dir,
-        )
-        verify_prompt += f"\n\nThis is round {i}. Write results to {verify_result_file}."
+        else:
+            # ==============================================================
+            # NORMAL MODE: decomposition → full verification → verdict
+            # ==============================================================
 
-        await run_agent(claude_opts, verify_prompt, logger,
-                        tracker=tracker, call_name=f"Verification R{i}")
-        logger.append_history(f"Iteration {i}: Verification completed")
+            # Step 2/4: Proof Decomposition
+            if skip_decomposition:
+                logger.log(f"--- Resuming round {i}: skipping decomposition (already complete) ---")
+                logger.append_history(f"Iteration {i}: Decomposition SKIPPED (resume)")
+            else:
+                logger.update_status(i, max_iterations, "2/4 Decomposition", "RUNNING", "Running decomposition agent...")
+                logger.append_history(f"Iteration {i}: Decomposition started")
 
-        # ------------------------------------------------------------------
-        # Step 4/4: Verdict
-        # ------------------------------------------------------------------
-        logger.update_status(i, max_iterations, "4/4 Checking Verdict", "RUNNING", "Analyzing verification results...")
-        logger.append_history(f"Iteration {i}: Checking verdict")
+                decomp_prompt = load_prompt(
+                    prompts_dir, "proof_decompose.md",
+                    problem_file=problem_file,
+                    proof_file=proof_file,
+                    output_file=decomp_file,
+                    output_dir=output_dir,
+                )
+                decomp_prompt += f"\n\nThis is round {i}. Write decomposition to {decomp_file}."
+
+                await run_agent(claude_opts, decomp_prompt, logger,
+                                tracker=tracker, call_name=f"Decomposition R{i}")
+                logger.append_history(f"Iteration {i}: Decomposition completed")
+
+            # Step 3/4: Verification
+            logger.update_status(i, max_iterations, "3/4 Verification", "RUNNING", "Running verification agent...")
+            logger.append_history(f"Iteration {i}: Verification started")
+
+            verify_prompt = load_prompt(
+                prompts_dir, "proof_verify.md",
+                problem_file=problem_file,
+                proof_file=proof_file,
+                decomposition_file=decomp_file,
+                output_file=verify_result_file,
+                output_dir=output_dir,
+            )
+            verify_prompt += f"\n\nThis is round {i}. Write results to {verify_result_file}."
+
+            await run_agent(claude_opts, verify_prompt, logger,
+                            tracker=tracker, call_name=f"Verification R{i}")
+            logger.append_history(f"Iteration {i}: Verification completed")
+
+            # Step 4/4: Verdict
+            logger.update_status(i, max_iterations, "4/4 Checking Verdict", "RUNNING", "Analyzing verification results...")
+            logger.append_history(f"Iteration {i}: Checking verdict")
 
         verdict_prompt = load_prompt(
             prompts_dir, "verdict_proof.md",
@@ -822,9 +877,18 @@ async def main():
         print(f"  Survey saved to: {related_info_dir}")
 
     # -------------------------------------------------------
+    # Parse difficulty for adaptive verification
+    # -------------------------------------------------------
+    difficulty = _parse_difficulty(output_dir)
+    if difficulty != "unknown":
+        print(f"  Difficulty: {difficulty.upper()}")
+        if difficulty == "easy":
+            print("  (Easy mode: skipping decomposition, using lightweight verification)")
+    print()
+
+    # -------------------------------------------------------
     # Stage 1: Proof Search Loop
     # -------------------------------------------------------
-    print()
     print("=" * 60)
     if resume_from_step == "decomposition":
         print(f"STAGE 1: Proof Search  [RESUMING round {start_round} from decomposition]")
@@ -841,6 +905,7 @@ async def main():
         proving_skill=proving_skill, tracker=tracker,
         start_round=start_round,
         resume_from_step=resume_from_step,
+        difficulty=difficulty,
     )
 
     # -------------------------------------------------------
