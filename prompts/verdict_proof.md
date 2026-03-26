@@ -8,7 +8,7 @@ Reply with ONLY the single word **'DONE'** if ALL of the following criteria are 
 
 1. **Problem-Proof Alignment:** The proof addresses the correct problem and proves exactly what was asked
 2. **Logical Validity:** Every logical step is valid with no gaps
-3. **Completeness:** All cases are covered, all claims are justified
+3. **Completeness:** All cases are covered, all claims are justified (uncertain means failed)
 4. **Correctness:** All mathematical claims, computations, and cited results are correct
 5. **Overall Verdict in the verification file is PASS**
 
