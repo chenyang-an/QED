@@ -65,11 +65,13 @@ If the verdict is `DONE`, the pipeline stops. Otherwise the next round begins, w
 
 **Stage 2 — Proof Effort Summary.** After the proof loop finishes (either success or max iterations), a summary agent reads all generated files and writes `proof_effort_summary.md`.
 
-All agents receive `skill/super_math_skill.md` as a system-level instruction — a guide to mathematical proof methodology.
+All agents receive `skill/super_math_skill.md` as a system-level instruction — a guide to mathematical proof methodology covering proof orientation, core strategies, stuck-recovery tactics, self-checking discipline, and computational tool usage. The proof search agent also receives the skill file path as an explicit input (`{skill_file}`) so it can reference the strategies directly.
 
 **Human guidance.** You can drop hints, suggestions, or corrections into `human_help/` at any time during a run. The proof search agent checks this directory at the start of every round.
 
 **Resume support.** If the pipeline is interrupted and re-run with the same output directory, it automatically detects prior progress: skips the literature survey if complete, detects which step within a round was last completed (including parallel steps), cleans up incomplete state, restores `proof.md` from backup if needed, and resumes from exactly where it left off. Resume detection respects the `skip_decomposition` setting — when enabled, it correctly interprets the absence of decomposition files.
+
+**Post-call file checks.** After every agent call, the pipeline verifies that all expected output files were created (proof, proof status, verification result, decomposition, error log, etc.). If any expected file is missing, the pipeline logs a fatal error and stops immediately — it does not silently continue with missing artifacts.
 
 **Smoke test.** `run.sh` automatically runs the smoke test before the pipeline starts. The smoke test validates prompts, skills, Claude connectivity, and — when multi-model is enabled — Codex and Gemini connectivity. If any test fails, the pipeline does not start.
 
@@ -112,19 +114,21 @@ proof_agent/
 
 ### Prompt Templates
 
-Each prompt file in `prompts/` is a Markdown template with `{placeholder}` variables filled at runtime by `pipeline.py`:
+Each prompt file in `prompts/` is a Markdown template with `{placeholder}` variables filled at runtime by `pipeline.py`. All prompts follow a consistent structure: **Overview → Input Files → Output Files (paths, format, error log, tmp) → Method/Instructions → Critical Instructions**.
 
 | Prompt | Placeholders |
 |--------|-------------|
-| `literature_survey.md` | `problem_file`, `related_info_dir`, `output_dir` |
-| `proof_search.md` | `problem_file`, `proof_file`, `output_dir`, `related_info_dir`, `round_num`, `proof_status_file`, `previous_round_instructions`, `human_help_dir` |
-| `proof_decompose.md` | `problem_file`, `proof_file`, `output_file`, `output_dir` |
-| `proof_verify.md` | `problem_file`, `proof_file`, `decomposition_file`, `output_file`, `output_dir` |
-| `proof_verify_direct.md` | `problem_file`, `proof_file`, `output_file`, `output_dir` |
-| `proof_verify_easy.md` | `problem_file`, `proof_file`, `output_file`, `output_dir` |
-| `proof_select.md` | `problem_file`, `verify_claude`, `verify_codex`, `verify_gemini`, `proof_claude`, `proof_codex`, `proof_gemini`, `selection_file` |
+| `literature_survey.md` | `problem_file`, `related_info_dir`, `output_dir`, `error_file` |
+| `proof_search.md` | `problem_file`, `proof_file`, `output_dir`, `related_info_dir`, `round_num`, `proof_status_file`, `previous_round_instructions`, `human_help_dir`, `skill_file`, `error_file` |
+| `proof_decompose.md` | `problem_file`, `proof_file`, `output_file`, `output_dir`, `error_file` |
+| `proof_verify.md` | `problem_file`, `proof_file`, `decomposition_file`, `output_file`, `output_dir`, `error_file` |
+| `proof_verify_direct.md` | `problem_file`, `proof_file`, `output_file`, `output_dir`, `error_file` |
+| `proof_verify_easy.md` | `problem_file`, `proof_file`, `output_file`, `output_dir`, `error_file` |
+| `proof_select.md` | `problem_file`, `verify_claude`, `verify_codex`, `verify_gemini`, `proof_claude`, `proof_codex`, `proof_gemini`, `selection_file`, `error_file` |
 | `verdict_proof.md` | `verification_result_file` |
-| `proof_effort_summary.md` | `output_dir`, `outcome`, `total_rounds`, `max_rounds`, `summary_file` |
+| `proof_effort_summary.md` | `output_dir`, `outcome`, `total_rounds`, `max_rounds`, `summary_file`, `error_file` |
+
+Every prompt (except `verdict_proof.md`) includes an `error_file` placeholder. Agents are instructed to always create this file — empty if no errors occurred, or populated with error details if something went wrong. After every agent call, the pipeline checks that all expected output files exist (including the error log); if any are missing, the pipeline logs a fatal error and stops immediately.
 
 ## Output Structure
 
@@ -137,13 +141,15 @@ Given an output directory `<output>/`, a complete run produces:
 ├── problem.tex                        # Copy of the input problem
 ├── proof.md                           # The final proof
 ├── proof_effort_summary.md            # Stage 2: comprehensive summary
+├── error_proof_effort_summary.md      # Error log for summary agent (empty if no errors)
 ├── TOKEN_USAGE.md                     # Human-readable token usage
 ├── token_usage.json                   # Machine-readable token usage
 │
 ├── related_info/                      # Stage 0: literature survey output
 │   ├── difficulty_evaluation.md       #   Difficulty classification (Easy/Medium/Hard)
 │   ├── problem_analysis.md            #   Problem classification, key objects, edge cases
-│   └── related_theorems.md            #   Applicable theorems, lemmas, counterexamples
+│   ├── related_theorems.md            #   Applicable theorems, lemmas, counterexamples
+│   └── error_literature_survey.md     #   Error log (empty if no errors)
 │
 ├── literature_survey_log/             # Stage 0: agent logs
 │   ├── AUTO_RUN_STATUS.md
@@ -158,7 +164,10 @@ Given an output directory `<output>/`, a complete run produces:
 │   │   ├── proof_before_round.md      #   Backup of proof.md before this round
 │   │   ├── proof_status.md            #   Proof search agent's log of what it tried
 │   │   ├── proof_decomposition.md     #   Miniclaim breakdown (normal mode only, absent when skip_decomposition)
-│   │   └── verification_result.md     #   Verification verdict
+│   │   ├── verification_result.md     #   Verification verdict
+│   │   ├── error_proof_search.md      #   Error log for proof search (empty if no errors)
+│   │   ├── error_proof_decompose.md   #   Error log for decomposition (absent when skip_decomposition)
+│   │   └── error_proof_verify*.md     #   Error log for verification (suffix matches verify variant used)
 │   └── round_2/ ...
 │
 ├── summary_log/                       # Stage 2: summary agent logs
@@ -177,22 +186,32 @@ Each round has per-model subdirectories:
 verification/
   round_N/
     proof_before_round.md              # Backup of main proof.md
+    selection.md                       # Selector agent's pick + reasoning
+    error_proof_select.md              # Error log for selector (empty if no errors)
     claude/
       proof.md                         # Claude's proof attempt
       proof_status.md                  # Claude's approach log
       proof_decomposition.md           # Decomposition (absent when skip_decomposition)
       verification_result.md           # Verification of Claude's proof
+      error_proof_search.md            # Error log for proof search
+      error_proof_decompose.md         # Error log for decomposition (absent when skip_decomposition)
+      error_proof_verify*.md           # Error log for verification
     codex/
       proof.md                         # Codex's proof attempt
       proof_status.md
       proof_decomposition.md           # Absent when skip_decomposition
       verification_result.md
+      error_proof_search.md
+      error_proof_decompose.md         # Absent when skip_decomposition
+      error_proof_verify*.md
     gemini/
       proof.md                         # Gemini's proof attempt
       proof_status.md
       proof_decomposition.md           # Absent when skip_decomposition
       verification_result.md
-    selection.md                       # Selector agent's pick + reasoning
+      error_proof_search.md
+      error_proof_decompose.md         # Absent when skip_decomposition
+      error_proof_verify*.md
 ```
 
 The main `proof.md` at the output root always holds the current best (selected) proof.
@@ -398,13 +417,13 @@ python code/smoke_test.py
 ```
 
 It checks:
-1. All prompt files exist
+1. All 9 prompt files exist
 2. All skill files exist
-3. Prompt templates render without unresolved placeholders
+3. All 9 prompt templates render without errors (every `{placeholder}` has a matching value)
 4. Skill file loads correctly
-5. Claude CLI can connect and respond
-6. Config file has required fields
-7. Selector prompt (`proof_select.md`) renders correctly
+5. Claude CLI is installed and responds correctly (via `claude -p` subprocess, matching how the pipeline calls it)
+6. Config file has required fields (`max_proof_iterations`, `claude`)
+7. Selector prompt (`proof_select.md`) exists and renders correctly
 8. **When `multi_model.enabled: true`:** Codex and Gemini CLIs are installed and respond correctly. If either is missing or broken, the test **fails** — fix them or set `multi_model.enabled: false`.
 
 ### Monitoring a Run

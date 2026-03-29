@@ -19,9 +19,9 @@ Read every relevant file in this directory and its subdirectories. Key files inc
 |-----------------|----------|
 | `problem.tex` | The original problem statement |
 | `proof.md` | The final proof (or best attempt) |
+| `related_info/difficulty_evaluation.md` | Difficulty classification (Easy/Medium/Hard) and justification |
 | `related_info/problem_analysis.md` | Problem classification and key objects |
 | `related_info/related_theorems.md` | Applicable theorems and related results |
-| `related_info/proof_strategies.md` | Candidate techniques and recommended plan |
 | `verification/round_*/proof_status.md` | What each round tried and learned |
 | `verification/round_*/verification_result.md` | Verification verdict for each round |
 | `TOKEN_USAGE.md` | Token usage across all agent calls |
@@ -67,6 +67,14 @@ For each round, write 2-3 sentences covering:
 ## Format
 
 Write the summary in clean Markdown to `{summary_file}`. Use LaTeX math notation (`$...$`, `$$...$$`) where appropriate.
+
+## Error Log
+
+If you encounter any errors during this call — tool failures, runtime exceptions, file I/O issues, context window limits, or unexpected behavior — record them in:
+```
+{error_file}
+```
+**Always create this file.** If no errors occur, write an empty file. If errors occur, include the error message, what you were doing when it occurred, and any workaround you applied.
 
 ## Critical Instructions
 

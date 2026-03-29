@@ -119,6 +119,33 @@ def _file_nonempty(path: str) -> bool:
         return bool(f.read().strip())
 
 
+def _check_expected_files(
+    expected: list[tuple[str, str]],
+    logger,
+    step_name: str,
+) -> None:
+    """Verify that all expected output files exist after an agent call.
+
+    Args:
+        expected: List of (filepath, description) tuples.
+        logger: PipelineLogger instance for logging.
+        step_name: Name of the pipeline step (for error messages).
+
+    Raises:
+        RuntimeError: If any expected file is missing.
+    """
+    missing = []
+    for path, desc in expected:
+        if not os.path.exists(path):
+            missing.append((path, desc))
+    if missing:
+        lines = [f"  - {desc}: {path}" for path, desc in missing]
+        msg = f"FATAL — {step_name}: expected output file(s) missing:\n" + "\n".join(lines)
+        logger.log(msg)
+        logger.append_history(f"{step_name}: FATAL — {len(missing)} expected file(s) missing")
+        raise RuntimeError(msg)
+
+
 def _parse_verdict_from_file(path: str) -> str:
     """Parse the Overall Verdict from a verification_result.md file.
 
@@ -659,10 +686,18 @@ async def run_literature_survey(
         problem_file=problem_file,
         related_info_dir=related_info_dir,
         output_dir=output_dir,
+        error_file=os.path.join(related_info_dir, "error_literature_survey.md"),
     )
 
     await run_agent(claude_opts, survey_prompt, logger, instructions=math_skill or None,
                     tracker=tracker, call_name="Literature Survey")
+
+    _check_expected_files([
+        (os.path.join(related_info_dir, "difficulty_evaluation.md"), "difficulty evaluation"),
+        (os.path.join(related_info_dir, "problem_analysis.md"), "problem analysis"),
+        (os.path.join(related_info_dir, "related_theorems.md"), "related theorems"),
+        (os.path.join(related_info_dir, "error_literature_survey.md"), "error log"),
+    ], logger, "Literature Survey")
 
     logger.finalize(1, 1, "FINISHED", "Literature survey complete.")
     return related_info_dir
@@ -774,6 +809,8 @@ async def _run_parallel_round(
                 proof_status_file=m_status,
                 previous_round_instructions=prev_instructions,
                 human_help_dir=human_help_dir,
+                skill_file=os.path.join(os.path.dirname(prompts_dir), "skill", "super_math_skill.md"),
+                error_file=os.path.join(mdir, "error_proof_search.md"),
             )
             search_prompt += (
                 f"\n\nThis is round {i}. Write or refine the proof. "
@@ -791,6 +828,13 @@ async def _run_parallel_round(
             )
 
         await _asyncio.gather(*[_proof_search(p) for p in providers])
+        for p in providers:
+            mdir = model_dirs[p]
+            _check_expected_files([
+                (os.path.join(mdir, "proof.md"), f"{p} proof"),
+                (os.path.join(mdir, "proof_status.md"), f"{p} proof status"),
+                (os.path.join(mdir, "error_proof_search.md"), f"{p} error log"),
+            ], logger, f"Parallel Proof Search R{i} [{p}]")
         logger.append_history(f"Iteration {i}: Parallel proof search completed")
 
     # ==================================================================
@@ -818,12 +862,19 @@ async def _run_parallel_round(
                 proof_file=m_proof,
                 output_file=m_decomp,
                 output_dir=output_dir,
+                error_file=os.path.join(mdir, "error_proof_decompose.md"),
             )
             decomp_prompt += f"\n\nThis is round {i}. Decomposing {provider}'s proof. Write to {m_decomp}."
             await run_agent(claude_opts, decomp_prompt, logger,
                             tracker=tracker, call_name=f"Decomposition R{i} [{provider}]")
 
         await _asyncio.gather(*[_decompose(p) for p in providers])
+        for p in providers:
+            mdir = model_dirs[p]
+            _check_expected_files([
+                (os.path.join(mdir, "proof_decomposition.md"), f"{p} decomposition"),
+                (os.path.join(mdir, "error_proof_decompose.md"), f"{p} error log"),
+            ], logger, f"Parallel Decomposition R{i} [{p}]")
         logger.append_history(f"Iteration {i}: Parallel decomposition completed")
 
     # ==================================================================
@@ -851,6 +902,7 @@ async def _run_parallel_round(
                     proof_file=m_proof,
                     output_file=m_verify,
                     output_dir=output_dir,
+                    error_file=os.path.join(mdir, "error_proof_verify_direct.md"),
                 )
             else:
                 m_decomp = os.path.join(mdir, "proof_decomposition.md")
@@ -861,17 +913,20 @@ async def _run_parallel_round(
                     decomposition_file=m_decomp,
                     output_file=m_verify,
                     output_dir=output_dir,
+                    error_file=os.path.join(mdir, "error_proof_verify.md"),
                 )
             verify_prompt += f"\n\nThis is round {i}. Verifying {provider}'s proof. Write to {m_verify}."
             await run_agent(claude_opts, verify_prompt, logger,
                             tracker=tracker, call_name=f"Verification R{i} [{provider}]")
 
-            if not _file_nonempty(m_verify):
-                logger.log(f"WARNING — {m_verify} missing or empty after verification agent returned! "
-                           f"The agent may have failed to write the file (e.g. output too large for a single Write call).")
-                logger.append_history(f"Iteration {i}: WARNING — {provider} verification_result.md missing!")
-
         await _asyncio.gather(*[_verify(p) for p in providers])
+        err_name = "error_proof_verify_direct.md" if skip_decomposition else "error_proof_verify.md"
+        for p in providers:
+            mdir = model_dirs[p]
+            _check_expected_files([
+                (os.path.join(mdir, "verification_result.md"), f"{p} verification result"),
+                (os.path.join(mdir, err_name), f"{p} error log"),
+            ], logger, f"Parallel Verification R{i} [{p}]")
         logger.append_history(f"Iteration {i}: Parallel verification completed")
 
     # ==================================================================
@@ -903,9 +958,14 @@ async def _run_parallel_round(
         proof_codex=proof_paths["codex"],
         proof_gemini=proof_paths["gemini"],
         selection_file=selection_file,
+        error_file=os.path.join(round_dir, "error_proof_select.md"),
     )
     await run_agent(claude_opts, select_prompt, logger,
                     tracker=tracker, call_name=f"Proof Selection R{i}")
+    _check_expected_files([
+        (selection_file, "selection report"),
+        (os.path.join(round_dir, "error_proof_select.md"), "error log"),
+    ], logger, f"Proof Selection R{i}")
     logger.append_history(f"Iteration {i}: Proof selection completed")
 
     # ==================================================================
@@ -1133,11 +1193,18 @@ async def run_proof_loop(
                     proof_status_file=proof_status_file,
                     previous_round_instructions=prev_instructions,
                     human_help_dir=human_help_dir,
+                    skill_file=os.path.join(os.path.dirname(prompts_dir), "skill", "super_math_skill.md"),
+                    error_file=os.path.join(round_dir, "error_proof_search.md"),
                 )
                 search_prompt += f"\n\nThis is round {i}. Write or refine the proof. If one approach doesn't work after much effort, try a completely different proof strategy."
 
                 await run_agent(claude_opts, search_prompt, logger, instructions=proving_skill or None,
                                 tracker=tracker, call_name=f"Proof Search R{i}")
+                _check_expected_files([
+                    (proof_file, "proof"),
+                    (proof_status_file, "proof status"),
+                    (os.path.join(round_dir, "error_proof_search.md"), "error log"),
+                ], logger, f"Proof Search R{i}")
                 logger.append_history(f"Iteration {i}: Proof search completed")
 
             if easy_mode:
@@ -1155,17 +1222,16 @@ async def run_proof_loop(
                     proof_file=proof_file,
                     output_file=verify_result_file,
                     output_dir=output_dir,
+                    error_file=os.path.join(round_dir, "error_proof_verify_easy.md"),
                 )
                 verify_prompt += f"\n\nThis is round {i}. Write results to {verify_result_file}."
 
                 await run_agent(claude_opts, verify_prompt, logger,
                                 tracker=tracker, call_name=f"Verification (easy) R{i}")
-
-                if not _file_nonempty(verify_result_file):
-                    logger.log(f"WARNING — {verify_result_file} missing or empty after verification agent returned! "
-                               f"The agent may have failed to write the file (e.g. output too large for a single Write call).")
-                    logger.append_history(f"Iteration {i}: WARNING — verification_result.md missing!")
-
+                _check_expected_files([
+                    (verify_result_file, "verification result"),
+                    (os.path.join(round_dir, "error_proof_verify_easy.md"), "error log"),
+                ], logger, f"Verification (easy) R{i}")
                 logger.append_history(f"Iteration {i}: Easy verification completed")
 
                 # Step 3/3: Verdict
@@ -1187,17 +1253,16 @@ async def run_proof_loop(
                     proof_file=proof_file,
                     output_file=verify_result_file,
                     output_dir=output_dir,
+                    error_file=os.path.join(round_dir, "error_proof_verify_direct.md"),
                 )
                 verify_prompt += f"\n\nThis is round {i}. Write results to {verify_result_file}."
 
                 await run_agent(claude_opts, verify_prompt, logger,
                                 tracker=tracker, call_name=f"Verification (direct) R{i}")
-
-                if not _file_nonempty(verify_result_file):
-                    logger.log(f"WARNING — {verify_result_file} missing or empty after verification agent returned! "
-                               f"The agent may have failed to write the file (e.g. output too large for a single Write call).")
-                    logger.append_history(f"Iteration {i}: WARNING — verification_result.md missing!")
-
+                _check_expected_files([
+                    (verify_result_file, "verification result"),
+                    (os.path.join(round_dir, "error_proof_verify_direct.md"), "error log"),
+                ], logger, f"Verification (direct) R{i}")
                 logger.append_history(f"Iteration {i}: Direct verification completed")
 
                 # Step 3/3: Verdict
@@ -1223,11 +1288,16 @@ async def run_proof_loop(
                         proof_file=proof_file,
                         output_file=decomp_file,
                         output_dir=output_dir,
+                        error_file=os.path.join(round_dir, "error_proof_decompose.md"),
                     )
                     decomp_prompt += f"\n\nThis is round {i}. Write decomposition to {decomp_file}."
 
                     await run_agent(claude_opts, decomp_prompt, logger,
                                     tracker=tracker, call_name=f"Decomposition R{i}")
+                    _check_expected_files([
+                        (decomp_file, "decomposition"),
+                        (os.path.join(round_dir, "error_proof_decompose.md"), "error log"),
+                    ], logger, f"Decomposition R{i}")
                     logger.append_history(f"Iteration {i}: Decomposition completed")
 
                 # Step 3/4: Verification
@@ -1241,17 +1311,16 @@ async def run_proof_loop(
                     decomposition_file=decomp_file,
                     output_file=verify_result_file,
                     output_dir=output_dir,
+                    error_file=os.path.join(round_dir, "error_proof_verify.md"),
                 )
                 verify_prompt += f"\n\nThis is round {i}. Write results to {verify_result_file}."
 
                 await run_agent(claude_opts, verify_prompt, logger,
                                 tracker=tracker, call_name=f"Verification R{i}")
-
-                if not _file_nonempty(verify_result_file):
-                    logger.log(f"WARNING — {verify_result_file} missing or empty after verification agent returned! "
-                               f"The agent may have failed to write the file (e.g. output too large for a single Write call).")
-                    logger.append_history(f"Iteration {i}: WARNING — verification_result.md missing!")
-
+                _check_expected_files([
+                    (verify_result_file, "verification result"),
+                    (os.path.join(round_dir, "error_proof_verify.md"), "error log"),
+                ], logger, f"Verification R{i}")
                 logger.append_history(f"Iteration {i}: Verification completed")
 
                 # Step 4/4: Verdict
@@ -1476,9 +1545,14 @@ async def main():
             total_rounds=total_rounds,
             max_rounds=max_proof,
             summary_file=summary_file,
+            error_file=os.path.join(output_dir, "error_proof_effort_summary.md"),
         )
         await run_agent(claude_opts, summary_prompt, logger=summary_logger,
                         tracker=tracker, call_name="Proof Effort Summary")
+        _check_expected_files([
+            (summary_file, "proof effort summary"),
+            (os.path.join(output_dir, "error_proof_effort_summary.md"), "error log"),
+        ], summary_logger, "Proof Effort Summary")
         summary_logger.finalize(1, 1, "FINISHED", "Summary complete.")
         print(f"  Summary saved to: {summary_file}")
 

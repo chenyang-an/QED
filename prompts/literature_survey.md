@@ -140,6 +140,14 @@ Create the directory `{related_info_dir}/` if it does not exist, and write these
 
 **Important:** Do NOT write proof strategies, proof plans, or attack plans. Your job is purely to survey the mathematical landscape. The proof search agent will decide how to attack the problem based on your survey.
 
+## Error Log
+
+If you encounter any errors during this call — tool failures, runtime exceptions, file I/O issues, context window limits, or unexpected behavior — record them in:
+```
+{error_file}
+```
+**Always create this file.** If no errors occur, write an empty file. If errors occur, include the error message, what you were doing when it occurred, and any workaround you applied.
+
 ## Temporary Files
 
 If you need to create temporary files during your research (e.g., scratch computations), save them in:

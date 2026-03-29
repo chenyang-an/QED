@@ -76,6 +76,14 @@ Write your selection to `{selection_file}` using this exact format:
 (If the selected proof has failures: briefly describe the key issues that need to be fixed in the next round. This helps the proof search agent focus its effort.)
 ```
 
+## Error Log
+
+If you encounter any errors during this call — tool failures, runtime exceptions, file I/O issues, context window limits, or unexpected behavior — record them in:
+```
+{error_file}
+```
+**Always create this file.** If no errors occur, write an empty file. If errors occur, include the error message, what you were doing when it occurred, and any workaround you applied.
+
 ## Important
 
 - You MUST read all three verification reports before making your selection.

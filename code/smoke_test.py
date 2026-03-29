@@ -14,8 +14,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from pipeline import load_prompt, make_claude_options
-from agent_framework.anthropic import ClaudeAgent
+from pipeline import load_prompt
 
 
 async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
@@ -56,7 +55,11 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
     # Test 1: Prompt files exist
     # -------------------------------------------------------
     print("\n=== Test 1: Prompt files ===")
-    prompt_files = ["literature_survey.md", "proof_search.md", "proof_verify.md", "verdict_proof.md"]
+    prompt_files = [
+        "literature_survey.md", "proof_search.md", "proof_decompose.md",
+        "proof_verify.md", "proof_verify_direct.md", "proof_verify_easy.md",
+        "proof_select.md", "verdict_proof.md", "proof_effort_summary.md",
+    ]
     for pf in prompt_files:
         exists = os.path.exists(os.path.join(prompts_dir, pf))
         check(f"Prompt {pf} exists", exists)
@@ -80,6 +83,7 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
             problem_file="/tmp/test_problem.tex",
             related_info_dir="/tmp/test_output/related_info",
             output_dir="/tmp/test_output",
+            error_file="/tmp/test_output/error_literature_survey.md",
         )
         check("literature_survey.md renders OK", "test_problem.tex" in prompt)
     except Exception as e:
@@ -96,6 +100,8 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
             proof_status_file="/tmp/test_status.md",
             previous_round_instructions="- This is the first round.",
             human_help_dir="/tmp/human_help",
+            skill_file=os.path.join(skill_dir, "super_math_skill.md"),
+            error_file="/tmp/test_output/verification/round_1/error_proof_search.md",
         )
         check("proof_search.md renders OK", "test_problem.tex" in prompt)
         check("No unresolved placeholders", "{problem_file}" not in prompt, "Found unresolved {problem_file}")
@@ -110,10 +116,50 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
             decomposition_file="/tmp/test_decomp.md",
             output_file="/tmp/test_verify.md",
             output_dir="/tmp/test_output",
+            error_file="/tmp/test_output/verification/round_1/error_proof_verify.md",
         )
         check("proof_verify.md renders OK", "test_problem.tex" in prompt)
     except Exception as e:
         check("proof_verify.md renders OK", False, str(e))
+
+    try:
+        prompt = load_prompt(
+            prompts_dir, "proof_verify_direct.md",
+            problem_file="/tmp/test_problem.tex",
+            proof_file="/tmp/test_proof.md",
+            output_file="/tmp/test_verify.md",
+            output_dir="/tmp/test_output",
+            error_file="/tmp/test_output/verification/round_1/error_proof_verify_direct.md",
+        )
+        check("proof_verify_direct.md renders OK", "test_problem.tex" in prompt)
+    except Exception as e:
+        check("proof_verify_direct.md renders OK", False, str(e))
+
+    try:
+        prompt = load_prompt(
+            prompts_dir, "proof_verify_easy.md",
+            problem_file="/tmp/test_problem.tex",
+            proof_file="/tmp/test_proof.md",
+            output_file="/tmp/test_verify.md",
+            output_dir="/tmp/test_output",
+            error_file="/tmp/test_output/verification/round_1/error_proof_verify_easy.md",
+        )
+        check("proof_verify_easy.md renders OK", "test_problem.tex" in prompt)
+    except Exception as e:
+        check("proof_verify_easy.md renders OK", False, str(e))
+
+    try:
+        prompt = load_prompt(
+            prompts_dir, "proof_decompose.md",
+            problem_file="/tmp/test_problem.tex",
+            proof_file="/tmp/test_proof.md",
+            output_file="/tmp/test_decomp.md",
+            output_dir="/tmp/test_output",
+            error_file="/tmp/test_output/verification/round_1/error_proof_decompose.md",
+        )
+        check("proof_decompose.md renders OK", "test_problem.tex" in prompt)
+    except Exception as e:
+        check("proof_decompose.md renders OK", False, str(e))
 
     try:
         prompt = load_prompt(
@@ -123,6 +169,20 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
         check("verdict_proof.md renders OK", "test_verify.md" in prompt)
     except Exception as e:
         check("verdict_proof.md renders OK", False, str(e))
+
+    try:
+        prompt = load_prompt(
+            prompts_dir, "proof_effort_summary.md",
+            output_dir="/tmp/test_output",
+            outcome="PASS",
+            total_rounds=3,
+            max_rounds=9,
+            summary_file="/tmp/test_output/proof_effort_summary.md",
+            error_file="/tmp/test_output/error_proof_effort_summary.md",
+        )
+        check("proof_effort_summary.md renders OK", "test_output" in prompt)
+    except Exception as e:
+        check("proof_effort_summary.md renders OK", False, str(e))
 
     # -------------------------------------------------------
     # Test 4: Skill loading
@@ -137,24 +197,42 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
         check("Skill loading", False, str(e))
 
     # -------------------------------------------------------
-    # Test 5: ClaudeAgent connectivity
+    # Test 5: Claude CLI connectivity
     # -------------------------------------------------------
-    print("\n=== Test 5: ClaudeAgent connectivity ===")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        claude_opts = make_claude_options(claude_cfg, tmpdir)
+    print("\n=== Test 5: Claude CLI connectivity ===")
+    import shutil
+    import subprocess
+    cli_path = claude_cfg.get("cli_path", "claude")
+    if shutil.which(cli_path) is not None:
+        check(f"Claude CLI '{cli_path}' found", True)
         try:
-            async with ClaudeAgent(default_options=claude_opts) as agent:
-                response = await agent.run("Reply with exactly: SMOKE_TEST_OK")
-                text = response.text or ""
-                check("Agent responds", len(text) > 0, "Empty response")
-                check("Agent response contains expected text",
-                      "SMOKE_TEST_OK" in text.upper() or "smoke" in text.lower(),
-                      f"Got: {text[:100]}")
+            result = subprocess.run(
+                [cli_path, "-p", "--output-format", "json",
+                 "--model", claude_cfg.get("subscription", {}).get("model", "sonnet"),
+                 "Reply with exactly: SMOKE_TEST_OK"],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, timeout=60,
+            )
+            import json as _json
+            try:
+                data = _json.loads(result.stdout)
+                text = data.get("result", "")
+            except (ValueError, KeyError):
+                text = result.stdout
+            check("Claude CLI responds", len(text) > 0, f"Empty response, stderr: {result.stderr[:200]}")
+            check("Claude CLI response valid",
+                  "SMOKE_TEST_OK" in text.upper() or "smoke" in text.lower(),
+                  f"Got: {text[:100]}")
+        except subprocess.TimeoutExpired:
+            check("Claude CLI responds", False, "Timed out after 60s")
         except Exception as e:
-            check("Agent connectivity", False, str(e))
+            check("Claude CLI connectivity", False, str(e))
+    else:
+        check(f"Claude CLI '{cli_path}' found", False,
+              "Install claude CLI: npm install -g @anthropic-ai/claude-code")
 
     # -------------------------------------------------------
-    # Test 6: Config loading
+    # Test 6: Config validation
     # -------------------------------------------------------
     print("\n=== Test 6: Config validation ===")
     pipeline_cfg = config.get("pipeline", {})
@@ -179,6 +257,7 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
             proof_codex="/tmp/round_1/codex/proof.md",
             proof_gemini="/tmp/round_1/gemini/proof.md",
             selection_file="/tmp/round_1/selection.md",
+            error_file="/tmp/round_1/error_proof_select.md",
         )
         check("proof_select.md renders OK", "selection" in prompt.lower())
     except Exception as e:
@@ -190,7 +269,6 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
     mm_cfg = config.get("pipeline", {}).get("multi_model", {})
     check("multi_model config present", "enabled" in mm_cfg, "Missing pipeline.multi_model in config")
 
-    import shutil
     if mm_cfg.get("enabled", False):
         print("\n=== Test 8: Multi-model connectivity (enabled in config) ===")
         from model_runner import run_codex_agent, run_gemini_agent
