@@ -14,7 +14,7 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from pipeline import load_prompt
+from pipeline import load_prompt, make_claude_options
 
 
 async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
@@ -197,36 +197,67 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
         check("Skill loading", False, str(e))
 
     # -------------------------------------------------------
-    # Test 5: Claude CLI connectivity
+    # Test 5: Claude CLI connectivity (provider-aware)
     # -------------------------------------------------------
-    print("\n=== Test 5: Claude CLI connectivity ===")
     import shutil
     import subprocess
+
+    provider = claude_cfg.get("provider", "subscription")
+    print(f"\n=== Test 5: Claude CLI connectivity (provider: {provider}) ===")
+
     cli_path = claude_cfg.get("cli_path", "claude")
     if shutil.which(cli_path) is not None:
         check(f"Claude CLI '{cli_path}' found", True)
+
+        # Build options via make_claude_options so we get the right model
+        # and env vars for the configured provider.
         try:
-            result = subprocess.run(
-                [cli_path, "-p", "--output-format", "json",
-                 "--model", claude_cfg.get("subscription", {}).get("model", "sonnet"),
-                 "Reply with exactly: SMOKE_TEST_OK"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, timeout=60,
-            )
-            import json as _json
+            opts = make_claude_options(claude_cfg, tempfile.mkdtemp())
+        except ValueError as e:
+            check(f"Claude config valid ({provider})", False, str(e))
+            opts = None
+
+        if opts is not None:
+            check(f"Claude config valid ({provider})", True)
+
+            # Build a clean env: start from a minimal base (PATH etc.)
+            # and layer ONLY the provider-specific vars on top.
+            # This prevents inherited vars (e.g. CLAUDE_CODE_USE_BEDROCK)
+            # from masking a misconfigured provider.
+            clean_env = {
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "HOME": os.environ.get("HOME", ""),
+                "USER": os.environ.get("USER", ""),
+                "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+                "TERM": os.environ.get("TERM", "xterm"),
+            }
+            clean_env.update(opts["env"])
+
+            model = opts["model"]
             try:
-                data = _json.loads(result.stdout)
-                text = data.get("result", "")
-            except (ValueError, KeyError):
-                text = result.stdout
-            check("Claude CLI responds", len(text) > 0, f"Empty response, stderr: {result.stderr[:200]}")
-            check("Claude CLI response valid",
-                  "SMOKE_TEST_OK" in text.upper() or "smoke" in text.lower(),
-                  f"Got: {text[:100]}")
-        except subprocess.TimeoutExpired:
-            check("Claude CLI responds", False, "Timed out after 60s")
-        except Exception as e:
-            check("Claude CLI connectivity", False, str(e))
+                result = subprocess.run(
+                    [cli_path, "-p", "--output-format", "json",
+                     "--model", model,
+                     "Reply with exactly: SMOKE_TEST_OK"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    env=clean_env, text=True, timeout=60,
+                )
+                import json as _json
+                try:
+                    data = _json.loads(result.stdout)
+                    text = data.get("result", "")
+                except (ValueError, KeyError):
+                    text = result.stdout
+                check(f"Claude CLI responds ({provider}, model={model})",
+                      len(text) > 0,
+                      f"Empty response, stderr: {result.stderr[:200]}")
+                check("Claude CLI response valid",
+                      "SMOKE_TEST_OK" in text.upper() or "smoke" in text.lower(),
+                      f"Got: {text[:100]}")
+            except subprocess.TimeoutExpired:
+                check(f"Claude CLI responds ({provider})", False, "Timed out after 60s")
+            except Exception as e:
+                check(f"Claude CLI connectivity ({provider})", False, str(e))
     else:
         check(f"Claude CLI '{cli_path}' found", False,
               "Install claude CLI: npm install -g @anthropic-ai/claude-code")
