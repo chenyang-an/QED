@@ -205,6 +205,43 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
     provider = claude_cfg.get("provider", "subscription")
     print(f"\n=== Test 5: Claude CLI connectivity (provider: {provider}) ===")
 
+    # Detect if ~/.claude/settings.json injects provider vars that would
+    # override the config.yaml provider selection.
+    _PROVIDER_VARS = ("CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_API_KEY",
+                      "AWS_PROFILE", "ANTHROPIC_MODEL")
+    cli_settings_path = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
+    cli_settings_conflict = False
+    if os.path.exists(cli_settings_path):
+        import json as _json_settings
+        try:
+            with open(cli_settings_path) as _sf:
+                cli_settings = _json_settings.load(_sf)
+            settings_env = cli_settings.get("env", {})
+            if provider == "subscription" and settings_env.get("CLAUDE_CODE_USE_BEDROCK"):
+                check("No settings.json provider conflict", False,
+                      "~/.claude/settings.json has CLAUDE_CODE_USE_BEDROCK set — "
+                      "the CLI will use Bedrock regardless of config.yaml provider='subscription'. "
+                      "Either set provider to 'bedrock' in config.yaml, or remove "
+                      "CLAUDE_CODE_USE_BEDROCK from ~/.claude/settings.json")
+                cli_settings_conflict = True
+            elif provider == "subscription" and settings_env.get("ANTHROPIC_API_KEY"):
+                check("No settings.json provider conflict", False,
+                      "~/.claude/settings.json has ANTHROPIC_API_KEY set — "
+                      "the CLI will use API key auth regardless of config.yaml provider='subscription'. "
+                      "Either set provider to 'api_key' in config.yaml, or remove "
+                      "ANTHROPIC_API_KEY from ~/.claude/settings.json")
+                cli_settings_conflict = True
+            elif provider == "api_key" and settings_env.get("CLAUDE_CODE_USE_BEDROCK"):
+                check("No settings.json provider conflict", False,
+                      "~/.claude/settings.json has CLAUDE_CODE_USE_BEDROCK set — "
+                      "the CLI may use Bedrock instead of your API key. "
+                      "Remove CLAUDE_CODE_USE_BEDROCK from ~/.claude/settings.json")
+                cli_settings_conflict = True
+            else:
+                check("No settings.json provider conflict", True)
+        except Exception:
+            pass  # Can't read settings — not a conflict we can detect
+
     cli_path = claude_cfg.get("cli_path", "claude")
     if shutil.which(cli_path) is not None:
         check(f"Claude CLI '{cli_path}' found", True)
@@ -222,8 +259,6 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
 
             # Strip vars that cause provider cross-contamination, then
             # add back only the ones for the configured provider.
-            _PROVIDER_VARS = ("CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_API_KEY",
-                              "AWS_PROFILE", "ANTHROPIC_MODEL")
             clean_env = {k: v for k, v in os.environ.items()
                          if k not in _PROVIDER_VARS}
             clean_env.update(opts["env"])
