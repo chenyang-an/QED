@@ -54,11 +54,17 @@ async def run_claude_agent(
         cmd += ["--append-system-prompt", instructions]
     cmd.append(prompt)
 
-    # Build environment with provider-specific vars (bedrock, api_key)
-    env = None
-    if extra_env:
-        env = os.environ.copy()
-        env.update(extra_env)
+    # Build a clean environment so that inherited shell variables
+    # (e.g. CLAUDE_CODE_USE_BEDROCK) don't override the configured provider.
+    # Start from a minimal base and layer only the provider-specific vars.
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", ""),
+        "USER": os.environ.get("USER", ""),
+        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        "TERM": os.environ.get("TERM", "xterm"),
+    }
+    env.update(extra_env)
 
     def _call():
         return subprocess.run(
