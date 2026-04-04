@@ -54,16 +54,11 @@ async def run_claude_agent(
         cmd += ["--append-system-prompt", instructions]
     cmd.append(prompt)
 
-    # Build a clean environment so that inherited shell variables
-    # (e.g. CLAUDE_CODE_USE_BEDROCK) don't override the configured provider.
-    # Start from a minimal base and layer only the provider-specific vars.
-    env = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "HOME": os.environ.get("HOME", ""),
-        "USER": os.environ.get("USER", ""),
-        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
-        "TERM": os.environ.get("TERM", "xterm"),
-    }
+    # Build environment: start from inherited env, strip vars that cause
+    # provider cross-contamination, then add back only the configured ones.
+    _PROVIDER_VARS = ("CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_API_KEY",
+                      "AWS_PROFILE", "ANTHROPIC_MODEL")
+    env = {k: v for k, v in os.environ.items() if k not in _PROVIDER_VARS}
     env.update(extra_env)
 
     def _call():

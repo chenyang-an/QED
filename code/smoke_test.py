@@ -220,17 +220,12 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
         if opts is not None:
             check(f"Claude config valid ({provider})", True)
 
-            # Build a clean env: start from a minimal base (PATH etc.)
-            # and layer ONLY the provider-specific vars on top.
-            # This prevents inherited vars (e.g. CLAUDE_CODE_USE_BEDROCK)
-            # from masking a misconfigured provider.
-            clean_env = {
-                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                "HOME": os.environ.get("HOME", ""),
-                "USER": os.environ.get("USER", ""),
-                "LANG": os.environ.get("LANG", "en_US.UTF-8"),
-                "TERM": os.environ.get("TERM", "xterm"),
-            }
+            # Strip vars that cause provider cross-contamination, then
+            # add back only the ones for the configured provider.
+            _PROVIDER_VARS = ("CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_API_KEY",
+                              "AWS_PROFILE", "ANTHROPIC_MODEL")
+            clean_env = {k: v for k, v in os.environ.items()
+                         if k not in _PROVIDER_VARS}
             clean_env.update(opts["env"])
 
             model = opts["model"]
