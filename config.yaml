@@ -15,29 +15,29 @@ pipeline:
   skip_decomposition: true
 
   # Multi-model parallel proof search.
-  # When enabled: hard problems run Claude + Codex + Gemini in parallel each round,
-  #   with a selector agent picking the best proof. (3x cost per round)
-  # When disabled: hard problems use Claude only (same as easy/medium). No selector needed.
+  # When enabled: listed providers run in parallel each round, with a selector
+  #   agent picking the best proof. Model selection is based solely on this config.
+  # When disabled: all problems use Claude only. No selector needed.
+  # Cost scales with number of providers: 2 providers = 2x proof search cost, 3 = 3x.
   multi_model:
-    enabled: false              # set to false to use Claude-only for all difficulties
-    difficulty_threshold: "hard"  # "hard" or "medium" — problems at or above this trigger multi-model
+    enabled: true               # true = use providers below, false = Claude-only
+    providers: ["claude", "codex", "gemini"]  # any subset of ["claude", "codex", "gemini"]
 
   # Multi-model verification.
   # When enabled, each proof is independently verified by all listed providers.
   # If ANY verifier's report says FAIL, the verdict is CONTINUE.
-  # Independent of multi_model (proof search) setting above.
+  # Model selection is based solely on this config, independent of multi_model above.
   # Cost scales linearly: 2 verifiers = 2x verification cost, 3 = 3x.
-  # In parallel proof-search mode (multi_model), cost is proof_agents × verifiers.
   verification_agents:
-    enabled: false              # false = Claude-only verification (backward compat)
-    providers: ["claude"]       # any subset of ["claude", "codex", "gemini"]
+    enabled: true               # true = use providers below, false = Claude-only
+    providers: ["codex", "gemini", "claude"]  # any subset of ["claude", "codex", "gemini"]
 
 claude:
   cli_path: "claude"
   permission_mode: "bypassPermissions"
 
   # Choose ONE provider: "subscription", "bedrock", or "api_key"
-  provider: "bedrock"
+  provider: "subscription"
 
   # --- Option 1: Claude subscription (Pro/Max) ---
   # No API key needed. Model is a shorthand: "opus", "sonnet", "haiku"
@@ -56,14 +56,14 @@ claude:
     key: ""  # paste your Anthropic API key here
 
 # --- Codex (OpenAI) ---
-# Used for parallel proof search on hard problems when multi_model is enabled.
+# Used for proof search (multi_model.providers) and/or verification (verification_agents.providers).
 codex:
   cli_path: "codex"
   model: "gpt-5.4"
   reasoning_effort: "xhigh"
 
 # --- Gemini (Google) ---
-# Used for parallel proof search on hard problems when multi_model is enabled.
+# Used for proof search (multi_model.providers) and/or verification (verification_agents.providers).
 gemini:
   cli_path: "gemini"
   model: "gemini-3.1-pro-preview"  # or "gemini-3-flash-preview"

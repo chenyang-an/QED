@@ -96,19 +96,42 @@ def check_prerequisites():
 
 
 def check_multi_model_providers(config: dict) -> list[str]:
-    """Check which multi-model providers are available.
+    """Check which multi-model providers are available for proof search.
 
-    Returns a list of available providers (always includes "claude").
+    Reads config["pipeline"]["multi_model"]["providers"]. If not specified,
+    defaults to all available providers (claude + any installed codex/gemini).
+    Filters the requested list to CLIs that are actually installed.
+    Always returns at least ["claude"].
+
+    Returns a list of available providers.
     Prints warnings for missing CLIs but does not exit.
     """
-    providers = ["claude"]
-    for name, cfg_key in [("codex", "codex"), ("gemini", "gemini")]:
-        cli = config.get(cfg_key, {}).get("cli_path", name)
+    mm_cfg = config.get("pipeline", {}).get("multi_model", {})
+    requested = mm_cfg.get("providers", None)
+
+    # If providers not specified, use all available (backward compatible)
+    if requested is None:
+        providers = ["claude"]
+        for name, cfg_key in [("codex", "codex"), ("gemini", "gemini")]:
+            cli = config.get(cfg_key, {}).get("cli_path", name)
+            if shutil.which(cli) is not None:
+                providers.append(name)
+            else:
+                print(f"  WARNING: '{cli}' CLI not found — {name} will be excluded from multi-model runs")
+        return providers
+
+    # Filter requested providers to those that are available
+    available = []
+    for name in requested:
+        if name == "claude":
+            available.append("claude")
+            continue
+        cli = config.get(name, {}).get("cli_path", name)
         if shutil.which(cli) is not None:
-            providers.append(name)
+            available.append(name)
         else:
-            print(f"  WARNING: '{cli}' CLI not found — {name} will be excluded from multi-model runs")
-    return providers
+            print(f"  WARNING: '{cli}' CLI not found — {name} excluded from multi-model proof search")
+    return available or ["claude"]
 
 
 def check_verification_providers(config: dict) -> list[str]:
@@ -298,7 +321,12 @@ def _parallel_round_complete(round_dir: str) -> bool:
     return _file_nonempty(os.path.join(round_dir, "selection.md"))
 
 
-def detect_resume_state(output_dir: str, skip_decomposition: bool = False) -> tuple[bool, int, str]:
+def detect_resume_state(
+    output_dir: str,
+    skip_decomposition: bool = False,
+    verification_providers: list[str] | None = None,
+    proof_providers: list[str] | None = None,
+) -> tuple[bool, int, str]:
     """Scan the output directory for progress from a previous run.
 
     Returns (skip_survey, start_round, resume_from_step):
@@ -321,10 +349,22 @@ def detect_resume_state(output_dir: str, skip_decomposition: bool = False) -> tu
         When skip_decomposition=True, "decomposition" and "parallel_decomposition"
         are never returned — rounds go directly from proof search to verification.
 
+    Args:
+        output_dir: Path to the output directory.
+        skip_decomposition: Whether decomposition step is skipped.
+        verification_providers: List of verifier names (e.g., ["claude", "codex", "gemini"]).
+            Used to check that ALL expected verification files exist.
+        proof_providers: List of proof search providers (e.g., ["claude", "codex", "gemini"]).
+            Used to check parallel round completeness.
+
     Side effects:
       - Deletes the last round directory if proof search did NOT complete
         (no proof_status.md), and restores proof.md from backup.
     """
+    if verification_providers is None:
+        verification_providers = ["claude"]
+    if proof_providers is None:
+        proof_providers = ["claude"]
     # --- Check literature survey completeness ---
     related_info_dir = os.path.join(output_dir, "related_info")
     survey_files = [
@@ -361,11 +401,25 @@ def detect_resume_state(output_dir: str, skip_decomposition: bool = False) -> tu
         if _parallel_round_complete(last_dir):
             return skip_survey, last + 1, "proof_search"
 
+        # Helper: check if a model has ALL expected verification files
+        def _has_all_verifications(mdir: str) -> bool:
+            """Check if mdir has verification results from ALL configured verifiers."""
+            if len(verification_providers) == 1:
+                # Single verifier: just check for verification_result.md
+                return _file_nonempty(os.path.join(mdir, "verification_result.md"))
+            # Multi-verifier: check for verification_result_<provider>.md for each
+            for v in verification_providers:
+                vf = os.path.join(mdir, f"verification_result_{v}.md")
+                if not _file_nonempty(vf):
+                    return False
+            return True
+
         # Check per-model completion to find resume point
         models_with_proof = []
         models_with_decomp = []
         models_with_verify = []
-        for m in ("claude", "codex", "gemini"):
+        models_with_partial_verify = []
+        for m in proof_providers:
             mdir = os.path.join(last_dir, m)
             if not os.path.isdir(mdir):
                 continue
@@ -373,13 +427,28 @@ def detect_resume_state(output_dir: str, skip_decomposition: bool = False) -> tu
                 models_with_proof.append(m)
             if _file_nonempty(os.path.join(mdir, "proof_decomposition.md")):
                 models_with_decomp.append(m)
-            if _find_verification_files(mdir):
+            if _has_all_verifications(mdir):
                 models_with_verify.append(m)
+            elif _find_verification_files(mdir):
+                # Has some but not all verification files
+                models_with_partial_verify.append(m)
 
-        if len(models_with_verify) >= len(models_with_proof) and models_with_verify:
-            # All completed models have verifications — just need selector
+        # Check if ALL proof providers have ALL verifications
+        all_verifications_complete = (
+            len(models_with_verify) == len(models_with_proof)
+            and len(models_with_proof) > 0
+            and len(models_with_partial_verify) == 0
+        )
+
+        if all_verifications_complete:
+            # All completed models have ALL verifications — just need selector
             print(f"  Round {last}: verifications complete, selection incomplete — will resume from selection")
             return skip_survey, last, "parallel_selection"
+
+        if models_with_partial_verify:
+            # Some models have partial verifications — need to resume verification
+            print(f"  Round {last}: partial verifications found for {models_with_partial_verify} — will resume from verification")
+            return skip_survey, last, "parallel_verification"
 
         if skip_decomposition:
             # No decomposition step — go directly from proof search to verification
@@ -791,14 +860,18 @@ async def _run_multi_verification(
     are named ``verification_result_<provider>.md``.
 
     Returns a list of verification result file paths that were created.
+    If some verifiers fail but at least one succeeds, returns only the
+    successful results. Raises RuntimeError only if ALL verifiers fail.
     """
     import asyncio as _asyncio
-    from model_runner import run_model
+    from model_runner import run_model, ModelRunnerError
 
     multi = len(verifiers) > 1
     result_files: list[str] = []
+    failed_verifiers: list[tuple[str, str]] = []  # (verifier, error_msg)
 
-    async def _verify_with(verifier: str):
+    async def _verify_with(verifier: str) -> tuple[str, str | None, str | None]:
+        """Returns (verifier, result_path, error_msg). error_msg is None on success."""
         vf_name = _verification_filename(verifier, multi)
         vf_path = os.path.join(base_dir, vf_name)
 
@@ -822,18 +895,73 @@ async def _run_multi_verification(
 
         cn = f"{call_name_prefix} [{verifier}]" if multi else call_name_prefix
 
-        response = await run_model(
-            verifier, verify_prompt, kwargs.get("output_dir", base_dir), config,
-            claude_opts=claude_opts, logger=logger, tracker=tracker,
-            call_name=cn,
-        )
-        _fallback_save_response(response, [vf_path], [err_path],
-                                logger, step_name=cn)
-        _check_expected_files([(vf_path, f"{verifier} verification result")],
-                              logger, cn)
-        result_files.append(vf_path)
+        try:
+            response = await run_model(
+                verifier, verify_prompt, kwargs.get("output_dir", base_dir), config,
+                claude_opts=claude_opts, logger=logger, tracker=tracker,
+                call_name=cn,
+            )
+            _fallback_save_response(response, [vf_path], [err_path],
+                                    logger, step_name=cn)
+            # Check if output file exists
+            if not os.path.exists(vf_path):
+                error_msg = f"Output file not created: {vf_path}"
+                logger.log(f"  {verifier} verification failed: {error_msg}")
+                # Write error to error file
+                os.makedirs(os.path.dirname(err_path), exist_ok=True)
+                with open(err_path, "a") as f:
+                    f.write(f"\n\n# Verification Failed\n\n{error_msg}\n")
+                return (verifier, None, error_msg)
+            return (verifier, vf_path, None)
+        except ModelRunnerError as e:
+            # Detailed error from model runner - log full details
+            error_msg = str(e)
+            logger.log(f"  {verifier} verification FAILED: {e.error_type}")
+            logger.log(f"    Message: {e.args[0]}")
+            if e.exit_code is not None:
+                logger.log(f"    Exit code: {e.exit_code}")
+            if e.stderr:
+                stderr_preview = e.stderr[:300] + ("..." if len(e.stderr) > 300 else "")
+                logger.log(f"    Stderr: {stderr_preview}")
+            # Write full error details to error file
+            os.makedirs(os.path.dirname(err_path), exist_ok=True)
+            with open(err_path, "w") as f:
+                f.write(e.full_details())
+            return (verifier, None, error_msg)
+        except Exception as e:
+            # Unexpected error - log and save
+            error_msg = f"{type(e).__name__}: {e}"
+            logger.log(f"  {verifier} verification failed (unexpected): {error_msg}")
+            # Write error to error file
+            os.makedirs(os.path.dirname(err_path), exist_ok=True)
+            with open(err_path, "a") as f:
+                f.write(f"\n\n# Verification Failed (Unexpected Error)\n\n")
+                f.write(f"**Exception:** {type(e).__name__}\n")
+                f.write(f"**Message:** {e}\n")
+            return (verifier, None, error_msg)
 
-    await _asyncio.gather(*[_verify_with(v) for v in verifiers])
+    results = await _asyncio.gather(*[_verify_with(v) for v in verifiers])
+
+    for verifier, result_path, error_msg in results:
+        if result_path:
+            result_files.append(result_path)
+        else:
+            failed_verifiers.append((verifier, error_msg or "Unknown error"))
+
+    # Log summary of failed verifiers
+    if failed_verifiers:
+        failed_names = [v for v, _ in failed_verifiers]
+        logger.log(f"  WARNING: {len(failed_verifiers)} verifier(s) failed: {', '.join(failed_names)}")
+        for v, err in failed_verifiers:
+            logger.append_history(f"{call_name_prefix} [{v}]: FAILED — {err[:100]}")
+
+    # Only fail if ALL verifiers failed
+    if not result_files:
+        failed_details = "\n".join(f"  - {v}: {err}" for v, err in failed_verifiers)
+        msg = f"FATAL — {call_name_prefix}: ALL verifiers failed:\n{failed_details}"
+        logger.log(msg)
+        raise RuntimeError(msg)
+
     return result_files
 
 
@@ -1279,11 +1407,9 @@ async def run_proof_loop(
     multi_verifier = len(verification_providers) > 1
 
     easy_mode = (difficulty == "easy")
-    hard_parallel = (
-        multi_model_config is not None
-        and not easy_mode
-        and difficulty == "hard"
-    )
+    # Multi-model parallel proof search: enabled when multi_model_config is set
+    # (determined solely by config, not by difficulty)
+    parallel_proof_search = multi_model_config is not None
     proof_file = os.path.join(output_dir, "proof.md")
     verify_dir = os.path.join(output_dir, "verification")
 
@@ -1334,7 +1460,7 @@ async def run_proof_loop(
         logger.log(f"========================================")
         logger.append_history(f"Iteration {i} started (round dir: round_{i})")
 
-        if hard_parallel:
+        if parallel_proof_search:
             # ==============================================================
             # HARD MODE: parallel proof search across multiple models
             # ==============================================================
@@ -1651,9 +1777,25 @@ async def main():
     tracker = TokenTracker(output_dir, claude_opts["model"])
 
     # -------------------------------------------------------
+    # Determine providers BEFORE resume detection (needed for completeness checks)
+    # -------------------------------------------------------
+    # Multi-model proof search providers
+    mm_cfg = pipeline_cfg.get("multi_model", {})
+    proof_providers = ["claude"]  # default single-model
+    if mm_cfg.get("enabled", False):
+        proof_providers = check_multi_model_providers(config)
+
+    # Verification providers
+    verification_providers = check_verification_providers(config)
+
+    # -------------------------------------------------------
     # Detect resume state
     # -------------------------------------------------------
-    skip_survey, start_round, resume_from_step = detect_resume_state(output_dir, skip_decomp)
+    skip_survey, start_round, resume_from_step = detect_resume_state(
+        output_dir, skip_decomp,
+        verification_providers=verification_providers,
+        proof_providers=proof_providers,
+    )
 
     print("=" * 60)
     print("  Proof Agent Pipeline")
@@ -1707,28 +1849,22 @@ async def main():
     print()
 
     # -------------------------------------------------------
-    # Multi-model setup (for hard problems)
+    # Multi-model proof search setup (providers already determined above)
     # -------------------------------------------------------
     multi_model_config = None
-    mm_cfg = pipeline_cfg.get("multi_model", {})
-    threshold = mm_cfg.get("difficulty_threshold", "hard")
-    difficulty_levels = {"easy": 1, "medium": 2, "hard": 3, "unknown": 2}
-    if mm_cfg.get("enabled", False) and difficulty_levels.get(difficulty, 2) >= difficulty_levels.get(threshold, 3):
-        available_providers = check_multi_model_providers(config)
-        if len(available_providers) > 1:
-            multi_model_config = {
-                "providers": available_providers,
-                "config": config,
-            }
-            print(f"  Multi-model mode: ACTIVE")
-            print(f"  Providers: {', '.join(available_providers)}")
-        else:
-            print("  Multi-model mode: DISABLED (only Claude available)")
+    if mm_cfg.get("enabled", False) and len(proof_providers) > 1:
+        multi_model_config = {
+            "providers": proof_providers,
+            "config": config,
+        }
+        print(f"  Multi-model proof search: ACTIVE")
+        print(f"  Proof search providers: {', '.join(proof_providers)}")
+    elif mm_cfg.get("enabled", False):
+        print("  Multi-model proof search: DISABLED (only one provider available)")
 
     # -------------------------------------------------------
-    # Multi-verifier setup
+    # Multi-verifier setup (providers already determined above)
     # -------------------------------------------------------
-    verification_providers = check_verification_providers(config)
     if len(verification_providers) > 1:
         print(f"  Multi-verifier mode: ACTIVE")
         print(f"  Verification providers: {', '.join(verification_providers)}")

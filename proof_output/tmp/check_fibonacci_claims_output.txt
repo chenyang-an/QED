@@ -1,0 +1,9 @@
+one_based_F3=2
+one_based_F4=3
+one_based_F5=5
+zero_based_F2=1
+zero_based_F3=2
+zero_based_F4=3
+zero_based_F5=5
+one_based_5th_term=5
+zero_based_5th_term=3

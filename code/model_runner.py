@@ -15,6 +15,62 @@ import subprocess
 from datetime import datetime
 
 
+class ModelRunnerError(Exception):
+    """Raised when a model runner encounters a fatal error.
+
+    Attributes:
+        provider: The model provider (claude, codex, gemini).
+        error_type: Category of error (subprocess_error, non_zero_exit, json_parse_error, empty_response).
+        message: Human-readable error message.
+        exit_code: Process exit code (if applicable).
+        stderr: Stderr output from the CLI (if any).
+        stdout: Raw stdout (for debugging).
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        error_type: str,
+        message: str,
+        exit_code: int | None = None,
+        stderr: str = "",
+        stdout: str = "",
+    ):
+        self.provider = provider
+        self.error_type = error_type
+        self.exit_code = exit_code
+        self.stderr = stderr
+        self.stdout = stdout
+        super().__init__(message)
+
+    def __str__(self):
+        parts = [f"[{self.provider}] {self.error_type}: {self.args[0]}"]
+        if self.exit_code is not None:
+            parts.append(f"exit_code={self.exit_code}")
+        if self.stderr:
+            # Truncate stderr for display
+            stderr_preview = self.stderr[:500] + ("..." if len(self.stderr) > 500 else "")
+            parts.append(f"stderr={stderr_preview!r}")
+        return " | ".join(parts)
+
+    def full_details(self) -> str:
+        """Return full error details for logging to file."""
+        lines = [
+            f"# Model Runner Error",
+            f"",
+            f"**Provider:** {self.provider}",
+            f"**Error Type:** {self.error_type}",
+            f"**Message:** {self.args[0]}",
+        ]
+        if self.exit_code is not None:
+            lines.append(f"**Exit Code:** {self.exit_code}")
+        if self.stderr:
+            lines.extend(["", "## Stderr", "```", self.stderr, "```"])
+        if self.stdout:
+            lines.extend(["", "## Stdout (first 2000 chars)", "```", self.stdout[:2000], "```"])
+        return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Claude wrapper
 # ---------------------------------------------------------------------------
@@ -78,13 +134,17 @@ async def run_claude_agent(
     try:
         result = await asyncio.get_event_loop().run_in_executor(None, _call)
     except Exception as exc:
+        elapsed = (datetime.now() - start).total_seconds()
         if logger:
             logger.log(f"[Claude] EXCEPTION: {type(exc).__name__}: {exc}")
         if tracker:
-            elapsed = (datetime.now() - start).total_seconds()
             tracker.record(call_name or "claude", 0, 0, elapsed,
                            provider="claude", model=model)
-        return ""
+        raise ModelRunnerError(
+            provider="claude",
+            error_type="subprocess_error",
+            message=f"Failed to execute Claude CLI: {type(exc).__name__}: {exc}",
+        )
 
     elapsed = (datetime.now() - start).total_seconds()
 
@@ -96,6 +156,7 @@ async def run_claude_agent(
     response = ""
     input_tokens = 0
     output_tokens = 0
+    json_parse_error = None
 
     try:
         data = json.loads(result.stdout)
@@ -105,14 +166,44 @@ async def run_claude_agent(
             input_tokens += model_stats.get("inputTokens", 0)
             output_tokens += model_stats.get("outputTokens", 0)
     except (json.JSONDecodeError, ValueError) as exc:
+        json_parse_error = str(exc)
         if logger:
             logger.log(f"[Claude] JSON parse error: {exc}")
             if result.stdout.strip():
                 logger.log(f"[Claude] Raw stdout (first 1000 chars): {result.stdout.strip()[:1000]}")
         response = result.stdout.strip()
 
-    if result.returncode != 0 and logger:
-        logger.log(f"[Claude] Non-zero exit code: {result.returncode}")
+    # Check for non-zero exit code (indicates CLI failure)
+    if result.returncode != 0:
+        if logger:
+            logger.log(f"[Claude] Non-zero exit code: {result.returncode}")
+        if tracker:
+            tracker.record(call_name or "claude", input_tokens, output_tokens,
+                           elapsed, provider="claude", model=model)
+        raise ModelRunnerError(
+            provider="claude",
+            error_type="non_zero_exit",
+            message=f"Claude CLI exited with code {result.returncode}",
+            exit_code=result.returncode,
+            stderr=result.stderr,
+            stdout=result.stdout,
+        )
+
+    # Check for empty response (might indicate silent failure)
+    if not response.strip():
+        if logger:
+            logger.log(f"[Claude] Empty response received")
+        if tracker:
+            tracker.record(call_name or "claude", input_tokens, output_tokens,
+                           elapsed, provider="claude", model=model)
+        raise ModelRunnerError(
+            provider="claude",
+            error_type="empty_response",
+            message="Claude returned empty response" + (f" (JSON parse error: {json_parse_error})" if json_parse_error else ""),
+            exit_code=result.returncode,
+            stderr=result.stderr,
+            stdout=result.stdout,
+        )
 
     if logger:
         logger.log(f"[Claude] Completed {call_name} in {elapsed:.0f}s "
@@ -179,13 +270,17 @@ async def run_codex_agent(
     try:
         result = await asyncio.get_event_loop().run_in_executor(None, _call)
     except Exception as exc:
+        elapsed = (datetime.now() - start).total_seconds()
         if logger:
             logger.log(f"[Codex] EXCEPTION: {type(exc).__name__}: {exc}")
         if tracker:
-            elapsed = (datetime.now() - start).total_seconds()
             tracker.record(call_name or "codex", 0, 0, elapsed,
                            provider="codex", model=model)
-        return ""
+        raise ModelRunnerError(
+            provider="codex",
+            error_type="subprocess_error",
+            message=f"Failed to execute Codex CLI: {type(exc).__name__}: {exc}",
+        )
 
     elapsed = (datetime.now() - start).total_seconds()
 
@@ -197,6 +292,7 @@ async def run_codex_agent(
     response = ""
     input_tokens = 0
     output_tokens = 0
+    json_parse_error = None
 
     try:
         lines = result.stdout.strip().split("\n")
@@ -212,6 +308,7 @@ async def run_codex_agent(
                 input_tokens += usage.get("input_tokens", 0)
                 output_tokens += usage.get("output_tokens", 0)
     except (json.JSONDecodeError, ValueError) as exc:
+        json_parse_error = str(exc)
         if logger:
             logger.log(f"[Codex] JSON parse error: {exc}")
             if result.stdout.strip():
@@ -219,8 +316,37 @@ async def run_codex_agent(
         # Fall back to raw stdout as response
         response = result.stdout.strip()
 
-    if result.returncode != 0 and logger:
-        logger.log(f"[Codex] Non-zero exit code: {result.returncode}")
+    # Check for non-zero exit code (indicates CLI failure)
+    if result.returncode != 0:
+        if logger:
+            logger.log(f"[Codex] Non-zero exit code: {result.returncode}")
+        if tracker:
+            tracker.record(call_name or "codex", input_tokens, output_tokens,
+                           elapsed, provider="codex", model=model)
+        raise ModelRunnerError(
+            provider="codex",
+            error_type="non_zero_exit",
+            message=f"Codex CLI exited with code {result.returncode}",
+            exit_code=result.returncode,
+            stderr=result.stderr,
+            stdout=result.stdout,
+        )
+
+    # Check for empty response (might indicate silent failure)
+    if not response.strip():
+        if logger:
+            logger.log(f"[Codex] Empty response received")
+        if tracker:
+            tracker.record(call_name or "codex", input_tokens, output_tokens,
+                           elapsed, provider="codex", model=model)
+        raise ModelRunnerError(
+            provider="codex",
+            error_type="empty_response",
+            message="Codex returned empty response" + (f" (JSON parse error: {json_parse_error})" if json_parse_error else ""),
+            exit_code=result.returncode,
+            stderr=result.stderr,
+            stdout=result.stdout,
+        )
 
     if logger:
         logger.log(f"[Codex] Completed {call_name} in {elapsed:.0f}s "
@@ -288,13 +414,17 @@ async def run_gemini_agent(
     try:
         result = await asyncio.get_event_loop().run_in_executor(None, _call)
     except Exception as exc:
+        elapsed = (datetime.now() - start).total_seconds()
         if logger:
             logger.log(f"[Gemini] EXCEPTION: {type(exc).__name__}: {exc}")
         if tracker:
-            elapsed = (datetime.now() - start).total_seconds()
             tracker.record(call_name or "gemini", 0, 0, elapsed,
                            provider="gemini", model=model)
-        return ""
+        raise ModelRunnerError(
+            provider="gemini",
+            error_type="subprocess_error",
+            message=f"Failed to execute Gemini CLI: {type(exc).__name__}: {exc}",
+        )
 
     elapsed = (datetime.now() - start).total_seconds()
 
@@ -306,6 +436,7 @@ async def run_gemini_agent(
     response = ""
     input_tokens = 0
     output_tokens = 0
+    json_parse_error = None
 
     try:
         data = json.loads(result.stdout)
@@ -317,14 +448,44 @@ async def run_gemini_agent(
             output_tokens += tokens.get("candidates", 0)
             output_tokens += tokens.get("thoughts", 0)  # include thinking tokens
     except (json.JSONDecodeError, ValueError) as exc:
+        json_parse_error = str(exc)
         if logger:
             logger.log(f"[Gemini] JSON parse error: {exc}")
             if result.stdout.strip():
                 logger.log(f"[Gemini] Raw stdout (first 1000 chars): {result.stdout.strip()[:1000]}")
         response = result.stdout.strip()
 
-    if result.returncode != 0 and logger:
-        logger.log(f"[Gemini] Non-zero exit code: {result.returncode}")
+    # Check for non-zero exit code (indicates CLI failure)
+    if result.returncode != 0:
+        if logger:
+            logger.log(f"[Gemini] Non-zero exit code: {result.returncode}")
+        if tracker:
+            tracker.record(call_name or "gemini", input_tokens, output_tokens,
+                           elapsed, provider="gemini", model=model)
+        raise ModelRunnerError(
+            provider="gemini",
+            error_type="non_zero_exit",
+            message=f"Gemini CLI exited with code {result.returncode}",
+            exit_code=result.returncode,
+            stderr=result.stderr,
+            stdout=result.stdout,
+        )
+
+    # Check for empty response (might indicate silent failure)
+    if not response.strip():
+        if logger:
+            logger.log(f"[Gemini] Empty response received")
+        if tracker:
+            tracker.record(call_name or "gemini", input_tokens, output_tokens,
+                           elapsed, provider="gemini", model=model)
+        raise ModelRunnerError(
+            provider="gemini",
+            error_type="empty_response",
+            message="Gemini returned empty response" + (f" (JSON parse error: {json_parse_error})" if json_parse_error else ""),
+            exit_code=result.returncode,
+            stderr=result.stderr,
+            stdout=result.stdout,
+        )
 
     if logger:
         logger.log(f"[Gemini] Completed {call_name} in {elapsed:.0f}s "

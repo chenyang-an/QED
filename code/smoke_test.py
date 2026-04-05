@@ -337,54 +337,114 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
               True, "verification_agents not enabled — Claude-only verification")
 
     # -------------------------------------------------------
-    # Test 8: Multi-model connectivity (when enabled)
+    # Test 7c: Multi-model providers config validation
     # -------------------------------------------------------
-    mm_cfg = config.get("pipeline", {}).get("multi_model", {})
+    mm_cfg = pipeline_cfg.get("multi_model", {})
     check("multi_model config present", "enabled" in mm_cfg, "Missing pipeline.multi_model in config")
-
     if mm_cfg.get("enabled", False):
-        print("\n=== Test 8: Multi-model connectivity (enabled in config) ===")
-        from model_runner import run_codex_agent, run_gemini_agent
+        mm_providers = mm_cfg.get("providers", ["claude", "codex", "gemini"])
+        valid_names = {"claude", "codex", "gemini"}
+        all_valid = all(p in valid_names for p in mm_providers)
+        check("multi_model.providers valid",
+              all_valid, f"Invalid providers: {mm_providers}")
+    else:
+        check("multi_model config present (disabled OK)",
+              True, "multi_model not enabled — Claude-only proof search")
+
+    # -------------------------------------------------------
+    # Test 8: Non-Claude provider connectivity (when needed)
+    # -------------------------------------------------------
+
+    # Collect all providers that need connectivity testing
+    providers_to_test = set()
+
+    # From multi_model (parallel proof search)
+    if mm_cfg.get("enabled", False):
+        mm_providers = mm_cfg.get("providers", ["claude", "codex", "gemini"])
+        for p in mm_providers:
+            if p != "claude":  # Claude is tested separately in Test 5
+                providers_to_test.add(p)
+
+    # From verification_agents
+    va_cfg = pipeline_cfg.get("verification_agents", {})
+    if va_cfg.get("enabled", False):
+        for p in va_cfg.get("providers", []):
+            if p != "claude":  # Claude is tested separately in Test 5
+                providers_to_test.add(p)
+
+    if providers_to_test:
+        print(f"\n=== Test 8: Non-Claude provider connectivity (testing: {', '.join(sorted(providers_to_test))}) ===")
+        import json as _json_test
 
         # --- Codex ---
-        codex_cfg = config.get("codex", {})
-        codex_cli = codex_cfg.get("cli_path", "codex")
-        if shutil.which(codex_cli) is not None:
-            try:
-                codex_resp = await run_codex_agent(
-                    "Reply with exactly: SMOKE_TEST_OK",
-                    tempfile.mkdtemp(), codex_cfg,
-                )
-                check("Codex responds", len(codex_resp) > 0, "Empty response")
-                check("Codex response valid",
-                      "smoke" in codex_resp.lower() or "ok" in codex_resp.lower() or len(codex_resp) > 5,
-                      f"Got: {codex_resp[:100]}")
-            except Exception as e:
-                check("Codex connectivity", False, str(e))
-        else:
-            check(f"Codex CLI '{codex_cli}' found", False,
-                  "Install codex or set multi_model.enabled to false")
+        if "codex" in providers_to_test:
+            codex_cfg = config.get("codex", {})
+            codex_cli = codex_cfg.get("cli_path", "codex")
+            if shutil.which(codex_cli) is not None:
+                try:
+                    codex_model = codex_cfg.get("model", "gpt-5.4")
+                    codex_result = subprocess.run(
+                        [codex_cli, "--search", "-m", codex_model,
+                         "exec", "--json", "--dangerously-bypass-approvals-and-sandbox",
+                         "Reply with exactly: SMOKE_TEST_OK"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        text=True, timeout=120, cwd=tempfile.mkdtemp(),
+                    )
+                    check("Codex CLI exits cleanly", codex_result.returncode == 0,
+                          f"Exit code {codex_result.returncode}, stderr: {codex_result.stderr[:200]}")
+                    codex_resp = codex_result.stdout.strip()
+                    check("Codex responds", len(codex_resp) > 0, "Empty response")
+                    check("Codex response valid",
+                          "smoke" in codex_resp.lower() or "ok" in codex_resp.lower() or len(codex_resp) > 5,
+                          f"Got: {codex_resp[:100]}")
+                except subprocess.TimeoutExpired:
+                    check("Codex connectivity", False, "Timed out after 120s")
+                except Exception as e:
+                    check("Codex connectivity", False, str(e))
+            else:
+                check(f"Codex CLI '{codex_cli}' found", False,
+                      "Install codex or disable codex in verification_agents.providers / multi_model")
 
         # --- Gemini ---
-        gemini_cfg = config.get("gemini", {})
-        gemini_cli = gemini_cfg.get("cli_path", "gemini")
-        if shutil.which(gemini_cli) is not None:
-            try:
-                gemini_resp = await run_gemini_agent(
-                    "Reply with exactly: SMOKE_TEST_OK",
-                    tempfile.mkdtemp(), gemini_cfg,
-                )
-                check("Gemini responds", len(gemini_resp) > 0, "Empty response")
-                check("Gemini response valid",
-                      "smoke" in gemini_resp.lower() or "ok" in gemini_resp.lower() or len(gemini_resp) > 5,
-                      f"Got: {gemini_resp[:100]}")
-            except Exception as e:
-                check("Gemini connectivity", False, str(e))
-        else:
-            check(f"Gemini CLI '{gemini_cli}' found", False,
-                  "Install gemini or set multi_model.enabled to false")
+        if "gemini" in providers_to_test:
+            gemini_cfg = config.get("gemini", {})
+            gemini_cli = gemini_cfg.get("cli_path", "gemini")
+            gemini_api_key = gemini_cfg.get("api_key", "")
+            if shutil.which(gemini_cli) is not None:
+                try:
+                    gemini_model = gemini_cfg.get("model", "gemini-3-flash-preview")
+                    gemini_env = os.environ.copy()
+                    if gemini_api_key:
+                        gemini_env["GEMINI_API_KEY"] = gemini_api_key
+                    gemini_result = subprocess.run(
+                        [gemini_cli, "-m", gemini_model, "-y", "-o", "json",
+                         "-p", "Reply with exactly: SMOKE_TEST_OK"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        text=True, timeout=120, env=gemini_env,
+                    )
+                    check("Gemini CLI exits cleanly", gemini_result.returncode == 0,
+                          f"Exit code {gemini_result.returncode}, stderr: {gemini_result.stderr[:300]}")
+                    # Parse JSON response
+                    gemini_resp = ""
+                    try:
+                        gemini_data = _json_test.loads(gemini_result.stdout)
+                        gemini_resp = gemini_data.get("response", "")
+                    except (ValueError, KeyError):
+                        gemini_resp = gemini_result.stdout.strip()
+                    check("Gemini responds", len(gemini_resp) > 0,
+                          f"Empty response, stdout: {gemini_result.stdout[:200]}")
+                    check("Gemini response valid",
+                          "smoke" in gemini_resp.lower() or "ok" in gemini_resp.lower() or len(gemini_resp) > 5,
+                          f"Got: {gemini_resp[:100]}")
+                except subprocess.TimeoutExpired:
+                    check("Gemini connectivity", False, "Timed out after 120s")
+                except Exception as e:
+                    check("Gemini connectivity", False, str(e))
+            else:
+                check(f"Gemini CLI '{gemini_cli}' found", False,
+                      "Install gemini or disable gemini in verification_agents.providers / multi_model")
     else:
-        print("\n=== Test 8: Multi-model connectivity [SKIPPED — disabled in config] ===")
+        print("\n=== Test 8: Non-Claude provider connectivity [SKIPPED — no non-Claude providers enabled] ===")
 
     # -------------------------------------------------------
     # Summary
