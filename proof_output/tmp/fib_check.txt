@@ -1,2 +1,0 @@
-F1-convention: F5=5
-F0-convention: F5=5
