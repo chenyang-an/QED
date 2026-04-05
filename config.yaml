@@ -21,7 +21,7 @@ pipeline:
   # Cost scales with number of providers: 2 providers = 2x proof search cost, 3 = 3x.
   multi_model:
     enabled: true               # true = use providers below, false = Claude-only
-    providers: ["claude", "codex", "gemini"]  # any subset of ["claude", "codex", "gemini"]
+    providers: ["claude"]  # any subset of ["claude", "codex", "gemini"]
 
   # Multi-model verification.
   # When enabled, each proof is independently verified by all listed providers.
@@ -30,7 +30,7 @@ pipeline:
   # Cost scales linearly: 2 verifiers = 2x verification cost, 3 = 3x.
   verification_agents:
     enabled: true               # true = use providers below, false = Claude-only
-    providers: ["codex", "gemini", "claude"]  # any subset of ["claude", "codex", "gemini"]
+    providers: ["gemini"]  # any subset of ["claude", "codex", "gemini"]
 
 claude:
   cli_path: "claude"
