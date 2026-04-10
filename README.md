@@ -29,6 +29,8 @@ The pipeline runs in three stages. All model invocations are done by spawning CL
 
 **Stage 0 — Literature Survey.** A survey agent reads the problem and first evaluates its difficulty (Easy / Medium / Hard), then conducts an investigation of the mathematical landscape scaled to that difficulty: classifying the problem, identifying applicable theorems, and cataloguing related results. Easy problems get a brief survey; hard problems get the full treatment. The results are saved to `related_info/` for the proof agent to reference. The survey agent does NOT produce proof strategies — that is the proof search agent's job.
 
+**Brainstorm session (optional).** When `brainstorm.enabled` is true, multiple models independently brainstorm proof strategies in parallel before each proof search round. Each model reads the problem, related work, and previous round's proof and verification feedback, then proposes short, high-level strategy ideas. The proof search agent reads all brainstorm results as inspiration. This increases diversity of proof approaches and helps break fixation when the prover is stuck. Brainstorm is skipped for easy problems.
+
 **Stage 1 — Proof Search Loop.** An iterative loop runs up to `max_proof_iterations` rounds (default 9). The behavior adapts to the problem's difficulty.
 
 Model selection is **solely determined by configuration** — the `multi_model.providers` list controls which models run proof search, and `verification_agents.providers` controls which models run verification. Difficulty classification affects only the survey depth and verification thoroughness, not which models are used.
@@ -112,6 +114,7 @@ proof_agent/
 │
 ├── prompts/
 │   ├── literature_survey.md           # Stage 0: literature survey agent prompt
+│   ├── brainstorm.md                 # Stage 1: brainstorm session prompt (optional)
 │   ├── proof_search.md               # Stage 1: proof search agent prompt
 │   ├── proof_verify_structural.md    # Stage 1: structural verification prompt (Phases 1-3)
 │   ├── proof_verify_detailed.md      # Stage 1: detailed verification prompt (Phase 4)
@@ -137,7 +140,8 @@ Each prompt file in `prompts/` is a Markdown template with `{placeholder}` varia
 | Prompt | Placeholders |
 |--------|-------------|
 | `literature_survey.md` | `problem_file`, `related_info_dir`, `output_dir`, `error_file` |
-| `proof_search.md` | `problem_file`, `proof_file`, `output_dir`, `related_info_dir`, `round_num`, `proof_status_file`, `previous_round_instructions`, `human_help_dir`, `prev_round_human_help_dir`, `skill_file`, `scratch_pad_file`, `error_file` |
+| `brainstorm.md` | `problem_file`, `related_info_dir`, `proof_file`, `prev_verification_dir`, `round_num`, `output_file`, `error_file` |
+| `proof_search.md` | `problem_file`, `proof_file`, `output_dir`, `related_info_dir`, `round_num`, `proof_status_file`, `previous_round_instructions`, `human_help_dir`, `prev_round_human_help_dir`, `skill_file`, `scratch_pad_file`, `brainstorm_dir`, `error_file` |
 | `proof_verify_structural.md` | `problem_file`, `proof_file`, `output_file`, `output_dir`, `error_file` |
 | `proof_verify_detailed.md` | `problem_file`, `proof_file`, `structural_report_file`, `output_file`, `output_dir`, `error_file` |
 | `proof_verify_easy.md` | `problem_file`, `proof_file`, `output_file`, `output_dir`, `error_file` |
@@ -180,6 +184,8 @@ Given an output directory `<output>/`, a complete run produces:
 │   │   ├── proof_before_round.md      #   Backup of proof.md before this round
 │   │   ├── proof_status.md            #   Proof search agent's log of what it tried
 │   │   ├── scratch_pad.md             #   Proof search agent's scratch work
+│   │   ├── brainstorm/                #   Brainstorm ideas (when enabled)
+│   │   │   └── brainstorm_result_*.md #   One file per brainstorm provider
 │   │   ├── verification_result.md     #   Verification verdict (easy mode)
 │   │   ├── verification_file/         #   Verification outputs (non-easy mode)
 │   │   │   ├── structural/
@@ -210,6 +216,8 @@ verification/
     proof_before_round.md              # Backup of main proof.md
     selection.md                       # Selector agent's pick + reasoning (absent when single provider)
     error_proof_select.md              # Error log for selector (absent when single provider)
+    brainstorm/                        # Brainstorm ideas (when enabled)
+      brainstorm_result_*.md           # One file per brainstorm provider
     human_help/
       human_help.md                    # Per-round human guidance (read by round N+1)
     claude/                            # Claude's proof attempt (if claude in multi_model.providers)
@@ -450,9 +458,9 @@ python code/smoke_test.py
 ```
 
 It checks:
-1. All 8 prompt files exist
+1. All 9 prompt files exist
 2. All skill files exist
-3. All 8 prompt templates render without errors (every `{placeholder}` has a matching value)
+3. All 9 prompt templates render without errors (every `{placeholder}` has a matching value)
 4. Skill file loads correctly
 5. Claude CLI is installed and responds correctly (via `claude -p` subprocess, matching how the pipeline calls it)
 6. Config file has required fields (`max_proof_iterations`, `claude`)
@@ -524,6 +532,10 @@ pipeline:
     enabled: true               # true = use providers below, false = Claude-only
     providers: ["claude", "codex", "gemini"]  # any subset of ["claude", "codex", "gemini"]
 
+  brainstorm:
+    enabled: false              # true = run brainstorm session before proof search
+    providers: ["claude"]       # any subset of ["claude", "codex", "gemini"]
+
 claude:
   cli_path: "claude"
   permission_mode: "bypassPermissions"
@@ -579,6 +591,9 @@ This pipeline runs Claude CLI with `--dangerously-skip-permissions`. This means 
         Single-model                       Multi-model
               |                        (providers from config)
               v                                 |
+    [Brainstorm (optional)]                     v
+              |                      [Brainstorm (optional)]
+              v                                 |
     [3-step round:                              v
      search → verify                 Proof Search (parallel)
      → verdict]                      (any subset of Claude/Codex/Gemini)
@@ -613,11 +628,13 @@ flowchart TD
     B --> C["related_info/ (2 files)"]
     C --> D{"Multi-model?"}
 
-    D -->|No| I["Proof Search"]
+    D -->|No| BS1["Brainstorm (optional)"]
+    BS1 --> I["Proof Search"]
     I --> IV["Verification (direct)"]
     IV --> J["Verdict Agent<br/>(DONE / CONTINUE)"]
 
-    D -->|Yes| K["Proof Search (parallel)<br/>multiple providers"]
+    D -->|Yes| BS2["Brainstorm (optional)"]
+    BS2 --> K["Proof Search (parallel)<br/>multiple providers"]
     K --> O["Verification (parallel)<br/>N proofs × M verifiers"]
     O --> P["Selector Agent<br/>(skipped when single provider)"]
     P --> J

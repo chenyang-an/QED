@@ -61,6 +61,7 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
         "proof_verify_structural.md", "proof_verify_detailed.md",
         "proof_verify_easy.md",
         "proof_select.md", "verdict_proof.md", "proof_effort_summary.md",
+        "brainstorm.md",
     ]
     for pf in prompt_files:
         exists = os.path.exists(os.path.join(prompts_dir, pf))
@@ -106,11 +107,28 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
             skill_file=os.path.join(skill_dir, "super_math_skill.md"),
             scratch_pad_file="/tmp/test_output/verification/round_1/scratch_pad.md",
             error_file="/tmp/test_output/verification/round_1/error_proof_search.md",
+            brainstorm_dir="/tmp/test_output/verification/round_1/brainstorm",
         )
         check("proof_search.md renders OK", "test_problem.tex" in prompt)
         check("No unresolved placeholders", "{problem_file}" not in prompt, "Found unresolved {problem_file}")
     except Exception as e:
         check("proof_search.md renders OK", False, str(e))
+
+    try:
+        prompt = load_prompt(
+            prompts_dir, "brainstorm.md",
+            problem_file="/tmp/test_problem.tex",
+            related_info_dir="/tmp/test_output/related_info",
+            proof_file="/tmp/test_proof.md",
+            prev_verification_dir="",
+            round_num=1,
+            output_file="/tmp/test_output/verification/round_1/brainstorm/brainstorm_result_claude.md",
+            error_file="/tmp/test_output/verification/round_1/brainstorm/error_brainstorm_claude.md",
+        )
+        check("brainstorm.md renders OK", "test_problem.tex" in prompt)
+        check("brainstorm.md has round num", "round 1" in prompt.lower() or "round {round_num}" not in prompt)
+    except Exception as e:
+        check("brainstorm.md renders OK", False, str(e))
 
     try:
         prompt = load_prompt(
@@ -350,6 +368,20 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
               True, "multi_model not enabled — Claude-only proof search")
 
     # -------------------------------------------------------
+    # Test 7c2: Brainstorm providers config validation
+    # -------------------------------------------------------
+    bs_cfg = pipeline_cfg.get("brainstorm", {})
+    if bs_cfg.get("enabled", False):
+        bs_providers = bs_cfg.get("providers", ["claude"])
+        valid_names = {"claude", "codex", "gemini"}
+        all_valid = all(p in valid_names for p in bs_providers)
+        check("brainstorm.providers valid",
+              all_valid, f"Invalid providers: {bs_providers}")
+    else:
+        check("brainstorm config present (disabled OK)",
+              True, "brainstorm not enabled")
+
+    # -------------------------------------------------------
     # Test 7d: Auxiliary agent providers config validation
     # -------------------------------------------------------
     print("\n=== Test 7d: Auxiliary agent providers ===")
@@ -393,6 +425,12 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
         provider = agent_cfg.get("provider", "claude").lower()
         if provider != "claude":
             providers_to_test.add(provider)
+
+    # From brainstorm
+    if bs_cfg.get("enabled", False):
+        for p in bs_cfg.get("providers", []):
+            if p != "claude":
+                providers_to_test.add(p)
 
     if providers_to_test:
         print(f"\n=== Test 8: Non-Claude provider connectivity (testing: {', '.join(sorted(providers_to_test))}) ===")

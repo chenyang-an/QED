@@ -378,6 +378,15 @@ This directory contains:
 
 **Read these files before starting your proof.** They contain critical intelligence gathered from a literature survey — related papers, applicable theorems, and known results that may inform your approach.
 
+### Brainstorm Ideas
+
+Multiple models independently brainstormed proof strategies for this problem. Their ideas are in:
+```
+{brainstorm_dir}
+```
+
+If this directory exists and is non-empty, read all files in it. These are high-level strategy suggestions from diverse models — use them as inspiration, but evaluate each idea critically before committing to an approach. Not all ideas will be good, but even one useful insight can save significant effort. If the directory is empty or does not exist, skip this section.
+
 ### Mathematical Strategy Guide
 
 A curated set of proof strategies and methodology principles is at:

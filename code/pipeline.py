@@ -171,6 +171,36 @@ def check_verification_providers(config: dict) -> list[str]:
     return available
 
 
+def check_brainstorm_providers(config: dict) -> list[str]:
+    """Return available brainstorm providers from config.
+
+    Reads config["pipeline"]["brainstorm"]["providers"]. Validates that CLIs
+    are installed for each requested provider. Exits with error if any
+    configured provider's CLI is missing.
+    """
+    bs_cfg = config.get("pipeline", {}).get("brainstorm", {})
+    requested = bs_cfg.get("providers", ["claude"])
+    available = []
+    missing = []
+    for name in requested:
+        if name == "claude":
+            available.append("claude")
+            continue
+        cli = config.get(name, {}).get("cli_path", name)
+        if shutil.which(cli) is not None:
+            available.append(name)
+        else:
+            missing.append(name)
+    if missing:
+        print(f"  ERROR: CLI not found for configured brainstorm providers: {', '.join(missing)}")
+        print(f"         Install the missing CLI(s) or remove them from brainstorm.providers in config.yaml")
+        sys.exit(1)
+    if not available:
+        print(f"  ERROR: No brainstorm providers configured in brainstorm.providers")
+        sys.exit(1)
+    return available
+
+
 def _verification_filename(verifier: str, multi_verifier: bool) -> str:
     """Return the verification result filename for *verifier*.
 
@@ -1106,6 +1136,7 @@ async def _run_parallel_round(
     prev_round_human_help_dir: str = "",
     resume_from_step: str = "proof_search",
     verification_providers: list[str] | None = None,
+    brainstorm_providers: list[str] | None = None,
 ) -> str:
     """Execute one parallel round for hard-mode. Returns 'DONE' or 'CONTINUE'.
 
@@ -1164,17 +1195,83 @@ async def _run_parallel_round(
     )
     skip_detailed = resume_from_step == "parallel_selection"
 
+    brainstorm_enabled = brainstorm_providers is not None and len(brainstorm_providers) > 0
+
     single_provider = len(providers) == 1
-    # Steps: search, structural, detailed, [select], copy, verdict
+    # Steps: [brainstorm], search, structural, detailed, [select], copy, verdict
     # When only one provider, skip selector agent
     if single_provider:
-        total_steps = 6
+        total_steps = 7 if brainstorm_enabled else 6
     else:
-        total_steps = 7
+        total_steps = 8 if brainstorm_enabled else 7
     step = 0
 
     # ==================================================================
-    # Step 1: PARALLEL PROOF SEARCH
+    # Step 0 (optional): BRAINSTORM SESSION
+    # ==================================================================
+    brainstorm_dir = os.path.join(round_dir, "brainstorm")
+    if brainstorm_enabled:
+        step += 1
+        # Check resume: skip brainstorm if results already exist
+        existing_brainstorms = []
+        if os.path.isdir(brainstorm_dir):
+            existing_brainstorms = [
+                f for f in os.listdir(brainstorm_dir)
+                if f.startswith("brainstorm_result_") and f.endswith(".md")
+            ]
+
+        if existing_brainstorms:
+            logger.log(f"--- Round {i}: brainstorm already complete ({len(existing_brainstorms)} files) — skipping ---")
+            logger.append_history(f"Iteration {i}: Brainstorm SKIPPED (resume, {len(existing_brainstorms)} files)")
+        elif skip_proof_search:
+            logger.log(f"--- Resuming round {i}: skipping brainstorm (proof search already complete) ---")
+            logger.append_history(f"Iteration {i}: Brainstorm SKIPPED (resume)")
+        else:
+            os.makedirs(brainstorm_dir, exist_ok=True)
+            logger.update_status(i, max_iterations, f"{step}/{total_steps} Brainstorm", "RUNNING",
+                                 f"Running brainstorm session with {len(brainstorm_providers)} models...")
+            logger.append_history(f"Iteration {i}: Brainstorm started ({', '.join(brainstorm_providers)})")
+
+            async def _brainstorm(bs_provider):
+                bs_output = os.path.join(brainstorm_dir, f"brainstorm_result_{bs_provider}.md")
+                bs_error = os.path.join(brainstorm_dir, f"error_brainstorm_{bs_provider}.md")
+
+                # Find previous verification for round > 1
+                bs_prev_verification_dir = ""
+                if i > 1:
+                    prev_round = os.path.join(verify_dir, f"round_{i-1}")
+                    for subdir in ("verification_file/detailed", "verification_file/structural", ""):
+                        candidate = os.path.join(prev_round, subdir) if subdir else prev_round
+                        if _find_verification_files(candidate):
+                            bs_prev_verification_dir = candidate
+                            break
+
+                bs_prompt = load_prompt(
+                    prompts_dir, "brainstorm.md",
+                    problem_file=problem_file,
+                    related_info_dir=related_info_dir,
+                    proof_file=proof_file,
+                    prev_verification_dir=bs_prev_verification_dir,
+                    round_num=i,
+                    output_file=bs_output,
+                    error_file=bs_error,
+                )
+
+                response = await run_model(
+                    bs_provider, bs_prompt, output_dir, config,
+                    claude_opts=claude_opts, logger=logger, tracker=tracker,
+                    call_name=f"Brainstorm R{i} [{bs_provider}]",
+                )
+                _fallback_save_response(response, [bs_output], [bs_error],
+                                        logger, step_name=f"Brainstorm R{i} [{bs_provider}]")
+
+            await _asyncio.gather(*[_brainstorm(p) for p in brainstorm_providers])
+            logger.append_history(f"Iteration {i}: Brainstorm completed")
+    else:
+        brainstorm_dir = ""
+
+    # ==================================================================
+    # Step N: PARALLEL PROOF SEARCH
     # ==================================================================
     step += 1
     if skip_proof_search:
@@ -1209,6 +1306,7 @@ async def _run_parallel_round(
                 skill_file=os.path.join(os.path.dirname(prompts_dir), "skill", "super_math_skill.md"),
                 scratch_pad_file=os.path.join(mdir, "scratch_pad.md"),
                 error_file=os.path.join(mdir, "error_proof_search.md"),
+                brainstorm_dir=brainstorm_dir,
             )
             search_prompt += (
                 f"\n\nThis is round {i}. Write or refine the proof. "
@@ -1531,6 +1629,7 @@ async def run_proof_loop(
     multi_model_config: dict | None = None,
     verification_providers: list[str] | None = None,
     config: dict | None = None,
+    brainstorm_providers: list[str] | None = None,
 ) -> bool:
     """Run the proof search/verification/verdict loop.
 
@@ -1658,6 +1757,7 @@ async def run_proof_loop(
                 prev_round_human_help_dir=prev_round_hh_dir,
                 resume_from_step=round_resume,
                 verification_providers=verification_providers,
+                brainstorm_providers=brainstorm_providers,
             )
 
             if decision == "DONE":
@@ -1683,13 +1783,91 @@ async def run_proof_loop(
             # Determine which steps to skip for this round (resume case)
             skip_proof_search = (i == start_round and resume_from_step in ("verification", "detailed_verification"))
 
+            # Brainstorm: enabled only for non-easy mode
+            brainstorm_enabled = (
+                not easy_mode
+                and brainstorm_providers is not None
+                and len(brainstorm_providers) > 0
+            )
+
             # Step labels depend on mode: easy=3 (search, verify, verdict),
-            # non-easy=4 (search, structural, detailed, verdict)
-            total_steps = 3 if easy_mode else 4
+            # non-easy=4 (search, structural, detailed, verdict),
+            # non-easy+brainstorm=5 (brainstorm, search, structural, detailed, verdict)
+            if easy_mode:
+                total_steps = 3
+            else:
+                total_steps = 5 if brainstorm_enabled else 4
+            current_step = 0
 
             # ------------------------------------------------------------------
-            # Step 1: Proof Search
+            # Step 0 (optional): Brainstorm Session (non-easy only)
             # ------------------------------------------------------------------
+            brainstorm_dir = ""
+            if brainstorm_enabled:
+                from model_runner import run_model
+                current_step += 1
+                brainstorm_dir = os.path.join(round_dir, "brainstorm")
+
+                # Check resume: skip brainstorm if results already exist
+                existing_brainstorms = []
+                if os.path.isdir(brainstorm_dir):
+                    existing_brainstorms = [
+                        f for f in os.listdir(brainstorm_dir)
+                        if f.startswith("brainstorm_result_") and f.endswith(".md")
+                    ]
+
+                if existing_brainstorms:
+                    logger.log(f"--- Round {i}: brainstorm already complete ({len(existing_brainstorms)} files) — skipping ---")
+                    logger.append_history(f"Iteration {i}: Brainstorm SKIPPED (resume, {len(existing_brainstorms)} files)")
+                elif skip_proof_search:
+                    logger.log(f"--- Resuming round {i}: skipping brainstorm (proof search already complete) ---")
+                    logger.append_history(f"Iteration {i}: Brainstorm SKIPPED (resume)")
+                else:
+                    os.makedirs(brainstorm_dir, exist_ok=True)
+                    logger.update_status(i, max_iterations, f"{current_step}/{total_steps} Brainstorm", "RUNNING",
+                                         f"Running brainstorm session with {len(brainstorm_providers)} models...")
+                    logger.append_history(f"Iteration {i}: Brainstorm started ({', '.join(brainstorm_providers)})")
+
+                    async def _brainstorm_single(bs_provider):
+                        bs_output = os.path.join(brainstorm_dir, f"brainstorm_result_{bs_provider}.md")
+                        bs_error = os.path.join(brainstorm_dir, f"error_brainstorm_{bs_provider}.md")
+
+                        # Find previous verification for round > 1
+                        bs_prev_verification_dir = ""
+                        if i > 1:
+                            prev_round = os.path.join(verify_dir, f"round_{i-1}")
+                            for subdir in ("verification_file/detailed", "verification_file/structural", ""):
+                                candidate = os.path.join(prev_round, subdir) if subdir else prev_round
+                                if _find_verification_files(candidate):
+                                    bs_prev_verification_dir = candidate
+                                    break
+
+                        bs_prompt = load_prompt(
+                            prompts_dir, "brainstorm.md",
+                            problem_file=problem_file,
+                            related_info_dir=related_info_dir,
+                            proof_file=proof_file,
+                            prev_verification_dir=bs_prev_verification_dir,
+                            round_num=i,
+                            output_file=bs_output,
+                            error_file=bs_error,
+                        )
+
+                        response = await run_model(
+                            bs_provider, bs_prompt, output_dir, config or {},
+                            claude_opts=claude_opts, logger=logger, tracker=tracker,
+                            call_name=f"Brainstorm R{i} [{bs_provider}]",
+                        )
+                        _fallback_save_response(response, [bs_output], [bs_error],
+                                                logger, step_name=f"Brainstorm R{i} [{bs_provider}]")
+
+                    await asyncio.gather(*[_brainstorm_single(p) for p in brainstorm_providers])
+                    logger.append_history(f"Iteration {i}: Brainstorm completed")
+
+            # ------------------------------------------------------------------
+            # Step N: Proof Search
+            # ------------------------------------------------------------------
+            current_step += 1
             if skip_proof_search:
                 logger.log(f"--- Resuming round {i}: skipping proof search (already complete) ---")
                 logger.append_history(f"Iteration {i}: Proof search SKIPPED (resume)")
@@ -1708,7 +1886,7 @@ async def run_proof_loop(
                 if os.path.exists(proof_file):
                     shutil.copy2(proof_file, proof_backup)
 
-                logger.update_status(i, max_iterations, f"1/{total_steps} Proof Search", "RUNNING", "Running proof search agent...")
+                logger.update_status(i, max_iterations, f"{current_step}/{total_steps} Proof Search", "RUNNING", "Running proof search agent...")
                 logger.append_history(f"Iteration {i}: Proof search started")
 
                 search_prompt = load_prompt(
@@ -1725,6 +1903,7 @@ async def run_proof_loop(
                     skill_file=os.path.join(os.path.dirname(prompts_dir), "skill", "super_math_skill.md"),
                     scratch_pad_file=os.path.join(round_dir, "scratch_pad.md"),
                     error_file=os.path.join(round_dir, "error_proof_search.md"),
+                    brainstorm_dir=brainstorm_dir,
                 )
                 search_prompt += f"\n\nThis is round {i}. Write or refine the proof. If one approach doesn't work after much effort, try a completely different proof strategy."
 
@@ -1745,9 +1924,10 @@ async def run_proof_loop(
                 # EASY MODE: use lightweight verification (unchanged)
                 # ==============================================================
 
-                # Step 2/3: Easy Verification
+                # Easy Verification
+                current_step += 1
                 verifier_label = f" ({', '.join(verification_providers)})" if multi_verifier else ""
-                logger.update_status(i, max_iterations, f"2/3 Verification (easy){verifier_label}", "RUNNING", "Running easy verification agent...")
+                logger.update_status(i, max_iterations, f"{current_step}/{total_steps} Verification (easy){verifier_label}", "RUNNING", "Running easy verification agent...")
                 logger.append_history(f"Iteration {i}: Easy verification started")
 
                 verification_files = await _run_multi_verification(
@@ -1769,8 +1949,9 @@ async def run_proof_loop(
                 )
                 logger.append_history(f"Iteration {i}: Easy verification completed")
 
-                # Step 3/3: Verdict
-                logger.update_status(i, max_iterations, "3/3 Checking Verdict", "RUNNING", "Analyzing verification results...")
+                # Verdict
+                current_step += 1
+                logger.update_status(i, max_iterations, f"{current_step}/{total_steps} Checking Verdict", "RUNNING", "Analyzing verification results...")
                 logger.append_history(f"Iteration {i}: Checking verdict")
 
                 # Build verdict prompt — supports single or multiple verification files
@@ -1802,15 +1983,14 @@ async def run_proof_loop(
                 # Determine which sub-steps to skip (resume case)
                 skip_structural = (i == start_round and resume_from_step == "detailed_verification")
 
-                # total_steps already set to 4 above (search, structural_verify, detailed_verify, verdict)
-
                 if skip_structural:
                     logger.log(f"--- Resuming round {i}: skipping structural verification (already complete) ---")
                     logger.append_history(f"Iteration {i}: Structural verification SKIPPED (resume)")
                 else:
-                    # Step 2/4: Structural Verification (Phases 1–3)
+                    # Structural Verification (Phases 1-3)
+                    current_step += 1
                     verifier_label = f" ({', '.join(verification_providers)})" if multi_verifier else ""
-                    logger.update_status(i, max_iterations, f"2/{total_steps} Structural Verification{verifier_label}", "RUNNING", "Running structural verification agent...")
+                    logger.update_status(i, max_iterations, f"{current_step}/{total_steps} Structural Verification{verifier_label}", "RUNNING", "Running structural verification agent...")
                     logger.append_history(f"Iteration {i}: Structural verification started")
 
                     structural_files = await _run_multi_verification(
@@ -1858,7 +2038,8 @@ async def run_proof_loop(
                         await asyncio.sleep(2)
                         continue
 
-                # Step 3/4: Detailed Verification (Phase 4)
+                # Detailed Verification (Phase 4)
+                current_step += 1
                 # Find structural report file(s) to pass to detailed verification
                 structural_files = _find_verification_files(structural_dir)
                 if not structural_files:
@@ -1872,7 +2053,7 @@ async def run_proof_loop(
                     structural_report_ref = structural_files[0]
 
                 verifier_label = f" ({', '.join(verification_providers)})" if multi_verifier else ""
-                logger.update_status(i, max_iterations, f"3/{total_steps} Detailed Verification{verifier_label}", "RUNNING", "Running detailed verification agent...")
+                logger.update_status(i, max_iterations, f"{current_step}/{total_steps} Detailed Verification{verifier_label}", "RUNNING", "Running detailed verification agent...")
                 logger.append_history(f"Iteration {i}: Detailed verification started")
 
                 verification_files = await _run_multi_verification(
@@ -1895,8 +2076,9 @@ async def run_proof_loop(
                 )
                 logger.append_history(f"Iteration {i}: Detailed verification completed")
 
-                # Step 4/4: Final Verdict
-                logger.update_status(i, max_iterations, f"4/{total_steps} Checking Verdict", "RUNNING", "Analyzing detailed verification results...")
+                # Final Verdict
+                current_step += 1
+                logger.update_status(i, max_iterations, f"{current_step}/{total_steps} Checking Verdict", "RUNNING", "Analyzing detailed verification results...")
                 logger.append_history(f"Iteration {i}: Checking final verdict")
 
                 # Build verdict prompt from detailed verification files
@@ -1995,6 +2177,13 @@ async def main():
     # Verification providers
     verification_providers = check_verification_providers(config)
 
+    # Brainstorm providers
+    brainstorm_cfg = pipeline_cfg.get("brainstorm", {})
+    brainstorm_enabled = brainstorm_cfg.get("enabled", False)
+    brainstorm_providers = []
+    if brainstorm_enabled:
+        brainstorm_providers = check_brainstorm_providers(config)
+
     # -------------------------------------------------------
     # Detect resume state
     # -------------------------------------------------------
@@ -2073,6 +2262,13 @@ async def main():
     if len(verification_providers) > 1:
         print(f"  Multi-verifier mode: ACTIVE")
         print(f"  Verification providers: {', '.join(verification_providers)}")
+
+    # -------------------------------------------------------
+    # Brainstorm setup (providers already determined above)
+    # -------------------------------------------------------
+    if brainstorm_enabled and brainstorm_providers:
+        print(f"  Brainstorm session: ACTIVE")
+        print(f"  Brainstorm providers: {', '.join(brainstorm_providers)}")
     print()
 
     # -------------------------------------------------------
@@ -2100,6 +2296,7 @@ async def main():
         multi_model_config=multi_model_config,
         verification_providers=verification_providers,
         config=config,
+        brainstorm_providers=brainstorm_providers if brainstorm_enabled else None,
     )
 
     # -------------------------------------------------------

@@ -24,6 +24,13 @@ pipeline:
   proof_select:
     provider: "claude"           # Model for selection (claude/codex/gemini)
 
+  # Brainstorm session: multiple models independently brainstorm proof strategies
+  # before proof search each round. Results are shared with the proof search agent.
+  # Skipped for easy problems. Cost scales with number of providers.
+  brainstorm:
+    enabled: false              # true = run brainstorm before proof search
+    providers: ["claude"]       # any subset of ["claude", "codex", "gemini"]
+
   # Literature survey agent (Stage 0).
   # Evaluates problem difficulty and surveys related work before proof search.
   literature_survey:
