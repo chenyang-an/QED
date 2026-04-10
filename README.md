@@ -559,33 +559,22 @@ This pipeline runs Claude CLI with `--dangerously-skip-permissions`. This means 
                                |
                      related_info/ (3 files)
                                |
-                     difficulty = Easy / Medium / Hard
-                               |
-           +-------------------+-------------------+
-           |                   |                   |
-         Easy             Single-model        Multi-model
-           |                   |             (providers from config)
-           v                   v                   |
-    [3-step round]       [3-step round]            |
-                               |                   v
-                               |    +------ Proof Search (parallel) ------+
-                               |    |   providers from multi_model.providers
-                               |    |   (any subset of Claude/Codex/Gemini)
-                               |    +-------------------------------------+
-                               |                   |
-                               |    +------ Verification (parallel) ------+
-                               |    |   Each proof × each verifier from
-                               |    |   verification_agents.providers
-                               |    |   (N proofs × M verifiers = N×M runs)
-                               |    +-------------------------------------+
-                               |                   |
-                               |                   v
-                               |            Selector Agent
-                               |       (picks best proof; requires
-                               |        unanimous PASS from all verifiers;
-                               |        skipped when single provider)
-                               |                   |
-                               v                   v
+              +----------------+----------------+
+              |                                 |
+        Single-model                       Multi-model
+              |                        (providers from config)
+              v                                 |
+    [3-step round:                              v
+     search → verify                 Proof Search (parallel)
+     → verdict]                      (any subset of Claude/Codex/Gemini)
+              |                                 |
+              |                      Verification (parallel)
+              |                      (N proofs × M verifiers)
+              |                                 |
+              |                          Selector Agent
+              |                     (skipped when single provider)
+              |                                 |
+              v                                 v
                           Verdict Agent
                           (DONE / CONTINUE)
                                |
@@ -605,29 +594,22 @@ This pipeline runs Claude CLI with `--dangerously-skip-permissions`. This means 
 
 ```mermaid
 flowchart TD
-    A["problem.tex"] --> B["Literature Survey Agent (Claude CLI)<br/>Stage 0<br/>Classifies difficulty and surveys related work"]
+    A["problem.tex"] --> B["Literature Survey Agent<br/>Stage 0"]
     B --> C["related_info/ (3 files)"]
-    C --> D{"Difficulty"}
+    C --> D{"Multi-model?"}
 
-    D --> E["Easy"]
-    D --> F["Single-model"]
-    D --> G["Multi-model<br/>(providers from config)"]
+    D -->|No| I["Proof Search"]
+    I --> IV["Verification (direct)"]
+    IV --> J["Verdict Agent<br/>(DONE / CONTINUE)"]
 
-    E --> H["3-step round"]
-
-    F --> I["3-step round"]
-    I --> J["Verdict Agent<br/>(DONE / CONTINUE)"]
-
-    G --> K["Proof Search (parallel)<br/>providers from multi_model.providers"]
+    D -->|Yes| K["Proof Search (parallel)<br/>multiple providers"]
     K --> O["Verification (parallel)<br/>N proofs × M verifiers"]
-    O --> P["Selector Agent<br/>picks best proof; requires unanimous PASS<br/>(skipped when single provider)"]
+    O --> P["Selector Agent<br/>(skipped when single provider)"]
     P --> J
-
-    H --> J
 
     J --> Q{"Verdict"}
     Q -->|DONE| R["Summary Agent<br/>Stage 2"]
     Q -->|CONTINUE| S["Next round"]
-    S --> J
+    S --> D
     R --> T["proof_effort_summary.md"]
 ```

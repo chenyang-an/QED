@@ -1,10 +1,10 @@
-# Direct Proof Verification Task
+# Structural Proof Verification Task (Phases 1–3)
 
 > **Agentic task.** Read the input files first, then think, plan, and work — use bash, computational tools, or any available resources as needed. Write the output files using tool calls according to the instructions. All input/output file paths and format specifications are at the end of this prompt.
 
 ## Overview
 
-You are a mathematical logic reviewer tasked with rigorously verifying a natural-language proof. There is NO separate decomposition — you must **identify the proof's logical steps yourself** and then verify each one, the overall structure, and the global checks.
+You are a mathematical logic reviewer tasked with performing the **structural verification** of a natural-language proof. This covers three phases: Problem-Statement Integrity, Citation Verification, and Subgoal Tree Structure. These are the foundational checks — if the proof fails any of these, detailed step-by-step verification (Phase 4) will not be attempted.
 
 You must be absolutely strict. If you are uncertain if the proof proved certain claim, then it fail to do so. You should always be very conservative on every respect. All judgement should be based on evidence.
 
@@ -12,7 +12,7 @@ You must be absolutely strict. If you are uncertain if the proof proved certain 
 
 ## Verification Method
 
-The verification proceeds in four phases, ordered from cheapest/most-fatal to most-expensive. Early phases are structural checks; later phases are detailed work that builds on earlier results.
+The verification proceeds in three phases, ordered from cheapest/most-fatal to most-expensive. These are structural checks that validate the proof's foundations before any detailed step-by-step work.
 
 ### Phase 1: Problem-Statement Integrity
 
@@ -38,7 +38,7 @@ The proof search agent may — intentionally or accidentally — alter, weaken, 
 
 **This phase is critical. Language models routinely hallucinate citations — inventing theorem numbers, attributing results to wrong sources, fabricating URLs, or citing statements that do not appear in the referenced source. You must catch every instance of this.**
 
-Citation verdicts from this phase are used in Phase 4 — if a citation is FAIL, any step depending on it is also FAIL.
+Citation verdicts from this phase are recorded in the output and will be used by the detailed verification phase (Phase 4) — if a citation is FAIL, any step depending on it will also be FAIL.
 
 #### 2a. Identify all citations
 
@@ -99,57 +99,13 @@ The proof should declare its architecture as a tree of `<subgoal>` nodes rooted 
 
 **Note:** This phase checks whether the tree STRUCTURE is valid — whether the reductions are sound and the architecture is complete. It does NOT check whether individual subgoals are actually proved (that happens in Phase 4).
 
-**EARLY TERMINATION: If ANY of Phase 1, 2, or 3 is FAIL, STOP HERE.** Write the output file with the results of Phases 1–3, mark Phase 4 as "SKIPPED — structural issues found in earlier phases," set the Overall Verdict to FAIL, and list the specific issues to fix. Do NOT proceed to Phase 4. The expensive detailed verification is only worth doing if the proof's foundations (correct problem, real citations, sound architecture) are solid.
-
-### Phase 4: Detailed Verification
-
-This is the expensive, detailed work. Only reached if Phases 1–3 all pass. It builds on all prior phases: citation verdicts from Phase 2, and the subgoal tree from Phase 3.
-
-#### 4a. Logical Step Verification
-
-Read the proof end-to-end. Identify every key logical assertion (step) in the proof — each step should be a single, precise mathematical statement that the proof makes or relies on. Be maximally fine-grained: split complex reasoning into individual steps. For each step:
-
-1. **State the step** — Write the precise mathematical assertion.
-2. **Quote the justification** — Quote the relevant passage from the proof that justifies this step.
-3. **List dependencies** — Which earlier steps does this step depend on? If this step depends on a citation, reference the citation by its label.
-4. **Check logical validity** — Does the step follow from its dependencies and the stated justification? Is the reasoning correct?
-5. **Check mathematical correctness** — Are computations, cited theorems, and applied results correct? Are all conditions for cited results satisfied? **Cross-reference with citation verdicts from Phase 2** — if a step relies on a citation that was marked FAIL, this step is also FAIL.
-6. **Check completeness** — Is the justification sufficient, or is there a gap? Does "clearly" or "obviously" hide a non-trivial step?
-7. **Computational check** — Whenever feasible, verify the step with code (SymPy, NumPy, Z3, etc.). Save scripts in `{output_dir}/tmp/`. Note the result (confirmed / contradicted / not checked).
-8. **Assign a verdict** — PASS, FAIL, or UNCERTAIN (if you cannot determine correctness but suspect a gap).
-9. **If FAIL or UNCERTAIN** — State precisely what is wrong or what is missing.
-
-#### 4b. Subgoal Resolution Verification
-
-Check that every subgoal declared in Phase 3 is actually resolved:
-
-1. **Check that every `<subgoal>` has a matching `<subgoal-resolved>`.** Any subgoal without a resolution marker is an unresolved gap.
-2. **Validate each resolution.** For every `<subgoal-resolved>`:
-   - Does the `by` field point to a specific, real part of the proof?
-   - Does that part of the proof actually establish the subgoal's `claim`?
-   - Is the resolution valid, or is it hand-waving?
-3. **Cross-reference with step verdicts.** If the steps that supposedly resolve a subgoal were marked FAIL or UNCERTAIN in 4a, the resolution is also FAIL.
-
-#### 4c. Key Original Step Analysis
-
-1. **List all steps the prover tagged as `<key-original-step>`.** These are the steps the prover claims are the original, nontrivial core of the proof.
-2. **Independently identify which steps YOU consider nontrivial and original** — the steps where the real difficulty of the problem is resolved, not routine setup or cited results.
-3. **Compare the two lists.** Flag any mismatches:
-   - **Untagged nontrivial step** — You identified a step as nontrivial but the prover did not tag it. This suggests the prover may be hiding a weak or hand-waved argument from scrutiny.
-   - **Inflated tag** — The prover tagged a routine step as key-original. This dilutes the signal and may indicate the prover is avoiding the real hard parts.
-4. **Check that tagged steps are maximally detailed.** Inside every `<key-original-step>`, there must be no "clearly," "obviously," or hand-waving. The prover committed to these being the hard parts — verify the justification matches that commitment.
-
-#### 4d. Coverage Check
-
-- Are all cases covered if case analysis is used?
-- Are boundary/degenerate cases addressed?
-- Are all hypotheses from the problem statement used? (If a hypothesis is unused, is the statement trivially true without it, or is there a gap?)
+**Phase 3 overall:** PASS if tree well-formed, all reductions valid, and no missing subgoals. FAIL otherwise.
 
 ---
 
 ## Use Computational Tools to Verify Steps
 
-You have access to a shell and can run code. **You should actively use computational tools to check individual steps** rather than relying only on manual inspection. Save scripts and their output in `{output_dir}/tmp/`.
+You have access to a shell and can run code. **You should actively use computational tools to check citations** rather than relying only on manual inspection. Save scripts and their output in `{output_dir}/tmp/`.
 
 ### Keep tool output concise
 
@@ -157,29 +113,18 @@ Printing large expressions to stdout wastes your context window. Write large res
 
 ### How to use tools for verification:
 
-- **Check algebraic identities and simplifications** — Use SymPy (`pip install sympy`) to verify that claimed equalities, simplifications, and manipulations are correct. If SymPy says `simplify(lhs - rhs) != 0`, the proof has an error.
-- **Test claims on concrete cases** — Use Python/NumPy/SageMath to evaluate key formulas at specific values and confirm they match what the proof claims.
-- **Verify combinatorial and number-theoretic formulas** — Brute-force check formulas against direct computation for small cases using Python or SageMath.
-- **Check boundary and degenerate cases computationally** — Plug in edge cases (n=0, n=1, empty set, etc.) into the proof's expressions and verify the claimed behavior.
-- **Validate inequality claims** — Use numerical sampling or Z3 (`pip install z3-solver`) to check whether claimed inequalities hold.
-- **Re-derive key computations independently** — If the proof performs a lengthy calculation, redo it in SymPy and compare.
-- **Plot functions** — Use Matplotlib to visualize claims about function behavior (monotonicity, convexity, convergence).
 - **Fetch and verify cited sources** — Use web tools to open cited URLs and check that the referenced theorems actually exist and match the cited statement.
+- **Check algebraic identities and simplifications** — Use SymPy (`pip install sympy`) to verify that claimed equalities, simplifications, and manipulations are correct.
+- **Test claims on concrete cases** — Use Python/NumPy/SageMath to evaluate key formulas at specific values and confirm they match what the proof claims.
 
-**If a computational check contradicts a step, that is strong evidence of an error — mark that step as FAIL.**
 **However, if an algorithmic run used for verification is longer than 3 minutes, stop it and skip that computation.**
 
 ## Critical Instructions
 
-- **Follow the four phases in order.** Do not skip ahead. Within Phases 1–3, if one fails, continue to the next (so all structural issues are reported together). But if ANY of Phases 1–3 fails, do NOT proceed to Phase 4 — write the output and stop.
+- **Follow the three phases in order.** Do not skip ahead. Report all structural issues found across all three phases.
 - Be thorough and skeptical. Your job is to find errors, not to approve proofs.
-- If a hard problem is "easily" proved, be especially suspicious.
-- Check that proof by contradiction actually uses the negated assumption.
-- Check that induction proofs actually invoke the induction hypothesis.
-- A proof that is "almost right" is still FAIL. Mathematical proofs are either correct or incorrect.
-- If you find the proof is correct, say so clearly with a PASS verdict.
-- **Use computational tools to independently verify steps.** Don't just read the proof — test it.
 - **Citations are the #1 source of hallucinations. Check every single one.** Do not trust any citation without verification. Models invent theorem numbers, fabricate URLs, attribute results to wrong authors, and misstate theorems. Assume every citation is wrong until you verify it yourself.
+- **Use computational tools to independently verify citations.** Don't just read the proof — test it.
 - **Whenever you feel you verified something, save your partial progress to the file!**
 
 ---
@@ -208,11 +153,11 @@ Write ALL verification results to:
 ### Output Format
 
 ```markdown
-# Proof Verification Results
+# Structural Verification Results (Phases 1–3)
 
 **Problem:** {problem_file}
 **Proof:** {proof_file}
-**Mode:** Direct verification (no separate decomposition)
+**Mode:** Structural verification (Phases 1–3)
 
 **No output files means the proof failed directly. Always put the verification result in the correct path.**
 
@@ -277,66 +222,6 @@ Write ALL verification results to:
 
 ---
 
-## Phase 4: Detailed Verification
-
-### 4a. Logical Step Verification
-
-#### Step 1
-**Assertion:** [precise mathematical claim]
-**Justification in proof:** "[quote from proof]"
-**Dependencies:** [list earlier step numbers or citation labels, or "None (hypothesis)"]
-**Verdict:** [PASS / FAIL / UNCERTAIN]
-**Analysis:** [why this step is correct/incorrect/unclear]
-**Computational check:** [confirmed / contradicted / not checked — describe what was tested]
-
-#### Step 2
-...
-
-[Continue for ALL identified steps. Do not skip or combine steps.]
-
-**Step Verification Summary:**
-
-| # | Step (short description) | Verdict | Computational |
-|---|--------------------------|---------|---------------|
-| 1 | [brief description] | PASS/FAIL/UNCERTAIN | [confirmed/contradicted/not checked] |
-| ... | ... | ... | ... |
-
-**Steps passed:** X / N
-**Steps failed:** Y / N
-**Steps uncertain:** Z / N
-
-### 4b. Subgoal Resolution Verification
-
-| ID | Type | Resolved | Resolution valid | Notes |
-|----|------|----------|------------------|-------|
-| SG1 | reduction | [yes/no] | [yes/no/not checked] | [brief note] |
-| SG2 | condition | [yes/no] | [yes/no/not checked] | [brief note] |
-| ... | ... | ... | ... | ... |
-
-**Unresolved subgoals:** [list any `<subgoal>` without a matching `<subgoal-resolved>`, or "None"]
-**Invalid resolutions:** [list any `<subgoal-resolved>` where the `by` field is wrong or hand-waving, or "None"]
-
-### 4c. Key Original Step Analysis
-
-**Prover-tagged key steps:** [list step numbers the prover wrapped in `<key-original-step>`]
-**Verifier-identified nontrivial steps:** [list step numbers YOU consider nontrivial and original]
-
-| Mismatch type | Step # | Details |
-|---------------|--------|---------|
-| Untagged nontrivial | [#] | [prover did not tag this step but it is nontrivial — explain why] |
-| Inflated tag | [#] | [prover tagged this step but it is routine — explain why] |
-| ... | ... | ... |
-
-**Hand-waving inside tagged steps:** [list any tagged key steps that are handwavy, not explicit, sketchy]
-
-### 4d. Coverage
-
-**All cases covered:** [YES / NO — list any missing cases]
-**Boundary/degenerate cases:** [addressed / missing — list any gaps]
-**All hypotheses used:** [YES / NO — list any unused hypotheses and whether their absence indicates a gap]
-
----
-
 ## Summary
 
 | Check | Status |
@@ -344,14 +229,10 @@ Write ALL verification results to:
 | Phase 1: Problem-Statement Integrity | [PASS/FAIL] |
 | Phase 2: Citation Verification | [PASS/FAIL] |
 | Phase 3: Subgoal Tree Structure | [PASS/FAIL] |
-| Phase 4a: All Steps Verified | [PASS/FAIL — FAIL if any step is FAIL or UNCERTAIN] |
-| Phase 4b: Subgoal Resolution | [PASS/FAIL — FAIL if unresolved or invalid resolutions] |
-| Phase 4c: Key Original Step Analysis | [PASS/FAIL] |
-| Phase 4d: Coverage | [PASS/FAIL] |
 
 ### Overall Verdict: [PASS/FAIL]
 
-### Failed/Uncertain Items (if any):
+### Failed Items (if any):
 1. [what is wrong]
 2. [what is wrong]
 ...

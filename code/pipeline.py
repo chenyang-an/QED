@@ -348,13 +348,15 @@ def detect_resume_state(
       - resume_from_step: which step to resume from within start_round.
 
         For **single-model** rounds:
-          "proof_search"   — start the round from scratch
-          "verification"   — proof search done, resume from verification
+          "proof_search"            — start the round from scratch
+          "verification"            — proof search done, resume from structural verification
+          "detailed_verification"   — structural done, resume from detailed verification
 
         For **parallel** rounds:
-          "proof_search"   — start the round from scratch
-          "parallel_verification"   — proof searches done, resume from verification
-          "parallel_selection"      — verifications done, resume from selector
+          "proof_search"                    — start the round from scratch
+          "parallel_verification"           — proof searches done, resume from structural verification
+          "parallel_detailed_verification"  — structural done, resume from detailed verification
+          "parallel_selection"              — all verifications done, resume from selector
 
     Args:
         output_dir: Path to the output directory.
@@ -407,23 +409,36 @@ def detect_resume_state(
         if _parallel_round_complete(last_dir):
             return skip_survey, last + 1, "proof_search"
 
-        # Helper: check if a model has ALL expected verification files
-        def _has_all_verifications(mdir: str) -> bool:
-            """Check if mdir has verification results from ALL configured verifiers."""
+        # Helper: check if a directory has ALL expected verification files
+        def _has_all_verifications_in(vdir: str) -> bool:
+            """Check if vdir has verification results from ALL configured verifiers."""
+            if not os.path.isdir(vdir):
+                return False
             if len(verification_providers) == 1:
-                # Single verifier: just check for verification_result.md
-                return _file_nonempty(os.path.join(mdir, "verification_result.md"))
-            # Multi-verifier: check for verification_result_<provider>.md for each
+                return _file_nonempty(os.path.join(vdir, "verification_result.md"))
             for v in verification_providers:
-                vf = os.path.join(mdir, f"verification_result_{v}.md")
+                vf = os.path.join(vdir, f"verification_result_{v}.md")
                 if not _file_nonempty(vf):
                     return False
             return True
 
+        def _has_all_verifications(mdir: str) -> bool:
+            """Check if mdir has verification results (new or old layout)."""
+            # New layout: check verification_file/detailed/ first
+            if _has_all_verifications_in(os.path.join(mdir, "verification_file", "detailed")):
+                return True
+            # Old layout: check mdir directly (backward compat)
+            return _has_all_verifications_in(mdir)
+
+        def _has_structural_verifications(mdir: str) -> bool:
+            """Check if mdir has structural verification results."""
+            return _has_all_verifications_in(os.path.join(mdir, "verification_file", "structural"))
+
         # Check per-model completion to find resume point
         models_with_proof = []
-        models_with_verify = []
-        models_with_partial_verify = []
+        models_with_detailed = []
+        models_with_structural = []
+        models_with_any_verify = []
         for m in proof_providers:
             mdir = os.path.join(last_dir, m)
             if not os.path.isdir(mdir):
@@ -431,26 +446,39 @@ def detect_resume_state(
             if _file_nonempty(os.path.join(mdir, "proof_status.md")):
                 models_with_proof.append(m)
             if _has_all_verifications(mdir):
-                models_with_verify.append(m)
-            elif _find_verification_files(mdir):
-                # Has some but not all verification files
-                models_with_partial_verify.append(m)
+                models_with_detailed.append(m)
+            elif _has_structural_verifications(mdir):
+                models_with_structural.append(m)
+            elif (_find_verification_files(os.path.join(mdir, "verification_file", "structural"))
+                  or _find_verification_files(os.path.join(mdir, "verification_file", "detailed"))
+                  or _find_verification_files(mdir)):
+                models_with_any_verify.append(m)
 
-        # Check if ALL proof providers have ALL verifications
-        all_verifications_complete = (
-            len(models_with_verify) == len(models_with_proof)
+        # Check if ALL proof providers have ALL detailed verifications
+        all_detailed_complete = (
+            len(models_with_detailed) == len(models_with_proof)
             and len(models_with_proof) > 0
-            and len(models_with_partial_verify) == 0
+            and len(models_with_structural) == 0
+            and len(models_with_any_verify) == 0
         )
 
-        if all_verifications_complete:
-            # All completed models have ALL verifications — just need selector
+        if all_detailed_complete:
             print(f"  Round {last}: verifications complete, selection incomplete — will resume from selection")
             return skip_survey, last, "parallel_selection"
 
-        if models_with_partial_verify:
-            # Some models have partial verifications — need to resume verification
-            print(f"  Round {last}: partial verifications found for {models_with_partial_verify} — will resume from verification")
+        # Check if ALL proof providers have structural verifications (but not detailed)
+        all_structural_complete = (
+            len(models_with_structural) + len(models_with_detailed) == len(models_with_proof)
+            and len(models_with_proof) > 0
+            and len(models_with_structural) > 0  # at least one still needs detailed
+        )
+
+        if all_structural_complete:
+            print(f"  Round {last}: structural complete, detailed incomplete — will resume from detailed verification")
+            return skip_survey, last, "parallel_detailed_verification"
+
+        if models_with_any_verify or models_with_structural:
+            print(f"  Round {last}: partial verifications found — will resume from verification")
             return skip_survey, last, "parallel_verification"
 
         if models_with_proof:
@@ -469,11 +497,23 @@ def detect_resume_state(
 
     # ====== Single-model (easy/medium) round ======
     status_ok = _file_nonempty(os.path.join(last_dir, "proof_status.md"))
-    verify_ok = bool(_find_verification_files(last_dir))
+
+    # Check for verification files in new structure, then old structure
+    structural_dir = os.path.join(last_dir, "verification_file", "structural")
+    detailed_dir = os.path.join(last_dir, "verification_file", "detailed")
+    has_detailed = bool(_find_verification_files(detailed_dir))
+    has_structural = bool(_find_verification_files(structural_dir))
+    has_legacy = bool(_find_verification_files(last_dir))  # backward compat
+    verify_ok = has_detailed or has_legacy  # round complete if detailed or legacy exists
 
     if status_ok and verify_ok:
         # Last round is fully complete — resume from the next one.
         return skip_survey, last + 1, "proof_search"
+
+    if status_ok and has_structural and not has_detailed:
+        # Structural done but detailed not started — resume from detailed verification
+        print(f"  Round {last}: structural verification complete, detailed incomplete — will resume from detailed verification")
+        return skip_survey, last, "detailed_verification"
 
     if status_ok and not verify_ok:
         print(f"  Round {last}: proof search complete, verification incomplete — will resume from verification")
@@ -1103,27 +1143,37 @@ async def _run_parallel_round(
             prev_instructions += f"- Read the PREVIOUS round's proof selection report from {prev_selection}.\n"
         # Also point to each model's verification from previous round
         for m in providers:
-            prev_v = os.path.join(prev_round_dir, m, "verification_result.md")
-            prev_s = os.path.join(prev_round_dir, m, "proof_status.md")
-            if os.path.exists(prev_v):
+            mdir = os.path.join(prev_round_dir, m)
+            # Check new split layout first, then legacy
+            prev_v_files = (
+                _find_verification_files(os.path.join(mdir, "verification_file", "detailed"))
+                or _find_verification_files(os.path.join(mdir, "verification_file", "structural"))
+                or _find_verification_files(mdir)
+            )
+            for prev_v in prev_v_files:
                 prev_instructions += f"- Previous round's {m} verification result: {prev_v}\n"
+            prev_s = os.path.join(mdir, "proof_status.md")
             if os.path.exists(prev_s):
                 prev_instructions += f"- Previous round's {m} proof status: {prev_s}\n"
     if not prev_instructions:
         prev_instructions = "- This is the first round. No previous round data available.\n"
 
     skip_proof_search = resume_from_step in (
-        "parallel_verification", "parallel_selection",
+        "parallel_verification", "parallel_detailed_verification",
+        "parallel_selection",
     )
-    skip_verification = resume_from_step == "parallel_selection"
+    skip_structural = resume_from_step in (
+        "parallel_detailed_verification", "parallel_selection",
+    )
+    skip_detailed = resume_from_step == "parallel_selection"
 
     single_provider = len(providers) == 1
-    # When only one provider, skip selector agent (steps: search, verify, copy, verdict)
-    # When multiple providers: search, verify, select, copy, verdict
+    # Steps: search, structural, detailed, [select], copy, verdict
+    # When only one provider, skip selector agent
     if single_provider:
-        total_steps = 4
+        total_steps = 6
     else:
-        total_steps = 5
+        total_steps = 7
     step = 0
 
     # ==================================================================
@@ -1192,48 +1242,145 @@ async def _run_parallel_round(
         logger.append_history(f"Iteration {i}: Parallel proof search completed")
 
     # ==================================================================
-    # Step 2: PARALLEL VERIFICATION
+    # Step 2: PARALLEL STRUCTURAL VERIFICATION
     # ==================================================================
     step += 1
-    if skip_verification:
-        logger.log(f"--- Resuming round {i}: skipping verification (already complete) ---")
-        logger.append_history(f"Iteration {i}: Parallel verification SKIPPED (resume)")
+    # Create per-model structural/detailed subdirectories
+    for m in providers:
+        mdir = model_dirs[m]
+        os.makedirs(os.path.join(mdir, "verification_file", "structural"), exist_ok=True)
+        os.makedirs(os.path.join(mdir, "verification_file", "detailed"), exist_ok=True)
+
+    if skip_structural:
+        logger.log(f"--- Resuming round {i}: skipping structural verification (already complete) ---")
+        logger.append_history(f"Iteration {i}: Parallel structural verification SKIPPED (resume)")
     else:
         verifier_names = ", ".join(verification_providers)
-        logger.update_status(i, max_iterations, f"{step}/{total_steps} Parallel Verification", "RUNNING",
-                             f"Verifying {len(providers)} proofs × {len(verification_providers)} verifiers...")
-        logger.append_history(f"Iteration {i}: Parallel verification started (verifiers: {verifier_names})")
+        logger.update_status(i, max_iterations, f"{step}/{total_steps} Parallel Structural Verification", "RUNNING",
+                             f"Structural verification: {len(providers)} proofs × {len(verification_providers)} verifiers...")
+        logger.append_history(f"Iteration {i}: Parallel structural verification started (verifiers: {verifier_names})")
 
-        async def _verify_proof_for_model(proof_provider):
+        async def _structural_verify_for_model(proof_provider):
             mdir = model_dirs[proof_provider]
             m_proof = os.path.join(mdir, "proof.md")
-
-            template = "proof_verify_direct.md"
-            kwargs = dict(
-                problem_file=problem_file,
-                proof_file=m_proof,
-                output_dir=output_dir,
-            )
+            s_dir = os.path.join(mdir, "verification_file", "structural")
 
             await _run_multi_verification(
                 verifiers=verification_providers,
-                prompt_template=template,
-                prompt_kwargs=kwargs,
-                base_dir=mdir,
+                prompt_template="proof_verify_structural.md",
+                prompt_kwargs=dict(
+                    problem_file=problem_file,
+                    proof_file=m_proof,
+                    output_dir=output_dir,
+                ),
+                base_dir=s_dir,
                 prompts_dir=prompts_dir,
                 config=config,
                 claude_opts=claude_opts,
                 logger=logger,
                 tracker=tracker,
-                call_name_prefix=f"Verification R{i} [{proof_provider}]",
+                call_name_prefix=f"Structural Verification R{i} [{proof_provider}]",
                 round_num=i,
             )
 
-        await _asyncio.gather(*[_verify_proof_for_model(p) for p in providers])
-        logger.append_history(f"Iteration {i}: Parallel verification completed")
+        await _asyncio.gather(*[_structural_verify_for_model(p) for p in providers])
+        logger.append_history(f"Iteration {i}: Parallel structural verification completed")
 
     # ==================================================================
-    # Step 3: SELECTOR AGENT — only when multiple providers
+    # Step 3: STRUCTURAL VERDICT (round-level)
+    # ==================================================================
+    step += 1
+    if skip_structural:
+        logger.log(f"--- Resuming round {i}: skipping structural verdict (already complete) ---")
+    else:
+        logger.update_status(i, max_iterations, f"{step}/{total_steps} Structural Verdict", "RUNNING",
+                             "Checking structural verification results...")
+        logger.append_history(f"Iteration {i}: Structural verdict check started")
+
+        # Collect ALL structural verification files across all models
+        all_structural_files = []
+        for m in providers:
+            s_dir = os.path.join(model_dirs[m], "verification_file", "structural")
+            all_structural_files.extend(_find_verification_files(s_dir))
+
+        if not all_structural_files:
+            # No structural files found — round fails
+            logger.log(f"Iteration {i}: No structural verification files found — round CONTINUE")
+            logger.append_history(f"Iteration {i}: Decision = CONTINUE (no structural files)")
+            return "CONTINUE"
+
+        # Build verdict prompt from all structural files
+        if len(all_structural_files) == 1:
+            structural_verdict_prompt = load_prompt(
+                prompts_dir, "verdict_proof.md",
+                verification_result_file=f"Read the verification result file at `{all_structural_files[0]}`.",
+            )
+        else:
+            files_list = "\n".join(f"- `{f}`" for f in all_structural_files)
+            structural_verdict_prompt = load_prompt(
+                prompts_dir, "verdict_proof.md",
+                verification_result_file=files_list,
+            )
+        structural_decision = await run_agent_for_verdict(
+            claude_opts, structural_verdict_prompt, logger,
+            tracker=tracker, call_name=f"Structural Verdict R{i}",
+        )
+        logger.log(f"Iteration {i}: Structural verdict = {structural_decision}")
+        logger.append_history(f"Iteration {i}: Structural verdict = {structural_decision}")
+
+        if structural_decision == "CONTINUE":
+            # Structural failed — skip detailed, round fails
+            logger.log(f"Iteration {i}: Structural checks FAILED — skipping detailed verification")
+            logger.append_history(f"Iteration {i}: Decision = CONTINUE (structural failed)")
+            return "CONTINUE"
+
+    # ==================================================================
+    # Step 4: PARALLEL DETAILED VERIFICATION
+    # ==================================================================
+    step += 1
+    if skip_detailed:
+        logger.log(f"--- Resuming round {i}: skipping detailed verification (already complete) ---")
+        logger.append_history(f"Iteration {i}: Parallel detailed verification SKIPPED (resume)")
+    else:
+        verifier_names = ", ".join(verification_providers)
+        logger.update_status(i, max_iterations, f"{step}/{total_steps} Parallel Detailed Verification", "RUNNING",
+                             f"Detailed verification: {len(providers)} proofs × {len(verification_providers)} verifiers...")
+        logger.append_history(f"Iteration {i}: Parallel detailed verification started (verifiers: {verifier_names})")
+
+        async def _detailed_verify_for_model(proof_provider):
+            mdir = model_dirs[proof_provider]
+            m_proof = os.path.join(mdir, "proof.md")
+            s_dir = os.path.join(mdir, "verification_file", "structural")
+            d_dir = os.path.join(mdir, "verification_file", "detailed")
+
+            # Find the structural report for this model to pass as input
+            s_files = _find_verification_files(s_dir)
+            structural_report = s_files[0] if s_files else os.path.join(s_dir, "verification_result.md")
+
+            await _run_multi_verification(
+                verifiers=verification_providers,
+                prompt_template="proof_verify_detailed.md",
+                prompt_kwargs=dict(
+                    problem_file=problem_file,
+                    proof_file=m_proof,
+                    structural_report_file=structural_report,
+                    output_dir=output_dir,
+                ),
+                base_dir=d_dir,
+                prompts_dir=prompts_dir,
+                config=config,
+                claude_opts=claude_opts,
+                logger=logger,
+                tracker=tracker,
+                call_name_prefix=f"Detailed Verification R{i} [{proof_provider}]",
+                round_num=i,
+            )
+
+        await _asyncio.gather(*[_detailed_verify_for_model(p) for p in providers])
+        logger.append_history(f"Iteration {i}: Parallel detailed verification completed")
+
+    # ==================================================================
+    # Step 5: SELECTOR AGENT — only when multiple providers
     # ==================================================================
     selection_file = os.path.join(round_dir, "selection.md")
 
@@ -1249,6 +1396,7 @@ async def _run_parallel_round(
         logger.append_history(f"Iteration {i}: Proof selection started")
 
         # Build dynamic verification reports block for selector prompt
+        # Point to detailed verification files (which contain the final verdicts)
         block_lines = []
         proof_paths = {}
         for m in ("claude", "codex", "gemini"):
@@ -1258,7 +1406,14 @@ async def _run_parallel_round(
             if not os.path.isdir(mdir):
                 block_lines.append(f"- **{m.title()}'s proof verification:** (not available — model not used)")
                 continue
-            vfiles = _find_verification_files(mdir)
+            # Check detailed first, then structural, then legacy location
+            d_dir = os.path.join(mdir, "verification_file", "detailed")
+            s_dir = os.path.join(mdir, "verification_file", "structural")
+            vfiles = (
+                _find_verification_files(d_dir)
+                or _find_verification_files(s_dir)
+                or _find_verification_files(mdir)
+            )
             if vfiles:
                 block_lines.append(f"**{m.title()}'s proof verification(s):**")
                 for vf in vfiles:
@@ -1301,7 +1456,7 @@ async def _run_parallel_round(
         selected_model = _parse_selected_model(selection_file, providers)
 
     # ==================================================================
-    # Step 4: Copy selected proof to main proof.md
+    # Step 6: Copy selected proof to main proof.md
     # ==================================================================
     step += 1
     logger.update_status(i, max_iterations, f"{step}/{total_steps} Applying Selection", "RUNNING",
@@ -1314,14 +1469,19 @@ async def _run_parallel_round(
         shutil.copy2(selected_proof, proof_file)
 
     # ==================================================================
-    # Step 5: VERDICT AGENT (Claude) — uses selected model's verification(s)
+    # Step 7: VERDICT AGENT (Claude) — uses selected model's detailed verification(s)
     # ==================================================================
     step += 1
     selected_mdir = os.path.join(round_dir, selected_model)
-    verification_files = _find_verification_files(selected_mdir)
+    # Check detailed dir first, then structural, then legacy location
+    verification_files = (
+        _find_verification_files(os.path.join(selected_mdir, "verification_file", "detailed"))
+        or _find_verification_files(os.path.join(selected_mdir, "verification_file", "structural"))
+        or _find_verification_files(selected_mdir)
+    )
     if not verification_files:
         # Fallback — should not happen if verification ran successfully
-        verification_files = [os.path.join(selected_mdir, "verification_result.md")]
+        verification_files = [os.path.join(selected_mdir, "verification_file", "detailed", "verification_result.md")]
     logger.update_status(i, max_iterations, f"{step}/{total_steps} Checking Verdict", "RUNNING",
                          "Analyzing selected verification results...")
     logger.append_history(f"Iteration {i}: Checking verdict (using {selected_model}'s verification, {len(verification_files)} report(s))")
@@ -1380,10 +1540,12 @@ async def run_proof_loop(
         start_round: Round number to begin from (for resume support).
             Rounds before this are assumed already complete on disk.
         resume_from_step: Which step to resume from within start_round:
-            "proof_search"  — start the round from scratch
-            "verification"  — skip proof search, start from verification
-            "parallel_verification"  — parallel round, skip proof search
-            "parallel_selection"     — parallel round, skip to selector
+            "proof_search"                    — start the round from scratch
+            "verification"                    — skip proof search, start from structural verification
+            "detailed_verification"           — structural done, start from detailed verification
+            "parallel_verification"           — parallel round, skip proof search
+            "parallel_detailed_verification"  — parallel round, structural done
+            "parallel_selection"              — parallel round, skip to selector
         difficulty: Problem difficulty from the literature survey
             ("easy", "medium", "hard", or "unknown"). Easy problems use
             a lightweight verification prompt.
@@ -1419,15 +1581,22 @@ async def run_proof_loop(
     if start_round > 1 and resume_from_step == "proof_search":
         prev_complete = start_round - 1
         prev_round_dir = os.path.join(verify_dir, f"round_{prev_complete}")
-        # Find verification files — single-model or parallel
-        prev_verify_files = _find_verification_files(prev_round_dir)
+        # Find verification files — check new structure first, then old
+        prev_verify_files = (
+            _find_verification_files(os.path.join(prev_round_dir, "verification_file", "detailed"))
+            or _find_verification_files(prev_round_dir)
+        )
         if not prev_verify_files and _is_parallel_round(prev_round_dir):
             # For parallel rounds, check selected model's verification(s)
             selected = _parse_selected_model(
                 os.path.join(prev_round_dir, "selection.md"),
                 multi_model_config.get("providers", ["claude"]) if multi_model_config else ["claude"],
             )
-            prev_verify_files = _find_verification_files(os.path.join(prev_round_dir, selected))
+            sel_mdir = os.path.join(prev_round_dir, selected)
+            prev_verify_files = (
+                _find_verification_files(os.path.join(sel_mdir, "verification_file", "detailed"))
+                or _find_verification_files(sel_mdir)
+            )
         if prev_verify_files:
             # All verification files must be PASS for the round to count as done
             verdicts = [_parse_verdict_from_file(f) for f in prev_verify_files]
@@ -1504,14 +1673,21 @@ async def run_proof_loop(
             # ==============================================================
             proof_status_file = os.path.join(round_dir, "proof_status.md")
 
-            prev_verify_files_list = _find_verification_files(os.path.join(verify_dir, f"round_{i-1}"))
-            prev_proof_status = os.path.join(verify_dir, f"round_{i-1}", "proof_status.md")
+            # Find previous round's verification files (check new structure first, then old)
+            prev_round_dir = os.path.join(verify_dir, f"round_{i-1}")
+            prev_verify_files_list = (
+                _find_verification_files(os.path.join(prev_round_dir, "verification_file", "detailed"))
+                or _find_verification_files(os.path.join(prev_round_dir, "verification_file", "structural"))
+                or _find_verification_files(prev_round_dir)  # backward compat with old layout
+            )
+            prev_proof_status = os.path.join(prev_round_dir, "proof_status.md")
 
             # Determine which steps to skip for this round (resume case)
-            skip_proof_search = (i == start_round and resume_from_step == "verification")
+            skip_proof_search = (i == start_round and resume_from_step in ("verification", "detailed_verification"))
 
-            # Step labels: 3 steps (search, verify, verdict)
-            total_steps = 3
+            # Step labels depend on mode: easy=3 (search, verify, verdict),
+            # non-easy=4 (search, structural, detailed, verdict)
+            total_steps = 3 if easy_mode else 4
 
             # ------------------------------------------------------------------
             # Step 1: Proof Search
@@ -1567,7 +1743,7 @@ async def run_proof_loop(
 
             if easy_mode:
                 # ==============================================================
-                # EASY MODE: use lightweight verification
+                # EASY MODE: use lightweight verification (unchanged)
                 # ==============================================================
 
                 # Step 2/3: Easy Verification
@@ -1598,53 +1774,147 @@ async def run_proof_loop(
                 logger.update_status(i, max_iterations, "3/3 Checking Verdict", "RUNNING", "Analyzing verification results...")
                 logger.append_history(f"Iteration {i}: Checking verdict")
 
+                # Build verdict prompt — supports single or multiple verification files
+                if len(verification_files) == 1:
+                    verdict_prompt = load_prompt(
+                        prompts_dir, "verdict_proof.md",
+                        verification_result_file=f"Read the verification result file at `{verification_files[0]}`.",
+                    )
+                else:
+                    files_list = "\n".join(f"- `{f}`" for f in verification_files)
+                    verdict_prompt = load_prompt(
+                        prompts_dir, "verdict_proof.md",
+                        verification_result_file=files_list,
+                    )
+                decision = await run_agent_for_verdict(claude_opts, verdict_prompt, logger,
+                                                       tracker=tracker, call_name=f"Verdict R{i}")
+
             else:
                 # ==============================================================
-                # NON-EASY MODE: direct verification → verdict
+                # NON-EASY MODE: structural → verdict → detailed → verdict
                 # ==============================================================
 
-                # Step 2/3: Direct Verification
+                # Create subdirectories for structural and detailed verification
+                structural_dir = os.path.join(round_dir, "verification_file", "structural")
+                detailed_dir = os.path.join(round_dir, "verification_file", "detailed")
+                os.makedirs(structural_dir, exist_ok=True)
+                os.makedirs(detailed_dir, exist_ok=True)
+
+                # Determine which sub-steps to skip (resume case)
+                skip_structural = (i == start_round and resume_from_step == "detailed_verification")
+
+                # total_steps already set to 4 above (search, structural_verify, detailed_verify, verdict)
+
+                if skip_structural:
+                    logger.log(f"--- Resuming round {i}: skipping structural verification (already complete) ---")
+                    logger.append_history(f"Iteration {i}: Structural verification SKIPPED (resume)")
+                else:
+                    # Step 2/4: Structural Verification (Phases 1–3)
+                    verifier_label = f" ({', '.join(verification_providers)})" if multi_verifier else ""
+                    logger.update_status(i, max_iterations, f"2/{total_steps} Structural Verification{verifier_label}", "RUNNING", "Running structural verification agent...")
+                    logger.append_history(f"Iteration {i}: Structural verification started")
+
+                    structural_files = await _run_multi_verification(
+                        verifiers=verification_providers,
+                        prompt_template="proof_verify_structural.md",
+                        prompt_kwargs=dict(
+                            problem_file=problem_file,
+                            proof_file=proof_file,
+                            output_dir=output_dir,
+                        ),
+                        base_dir=structural_dir,
+                        prompts_dir=prompts_dir,
+                        config=config or {},
+                        claude_opts=claude_opts,
+                        logger=logger,
+                        tracker=tracker,
+                        call_name_prefix=f"Structural Verification R{i}",
+                        round_num=i,
+                    )
+                    logger.append_history(f"Iteration {i}: Structural verification completed")
+
+                    # Structural verdict: check if structural checks passed
+                    if len(structural_files) == 1:
+                        structural_verdict_prompt = load_prompt(
+                            prompts_dir, "verdict_proof.md",
+                            verification_result_file=f"Read the verification result file at `{structural_files[0]}`.",
+                        )
+                    else:
+                        files_list = "\n".join(f"- `{f}`" for f in structural_files)
+                        structural_verdict_prompt = load_prompt(
+                            prompts_dir, "verdict_proof.md",
+                            verification_result_file=files_list,
+                        )
+                    structural_decision = await run_agent_for_verdict(
+                        claude_opts, structural_verdict_prompt, logger,
+                        tracker=tracker, call_name=f"Structural Verdict R{i}",
+                    )
+                    logger.log(f"Iteration {i}: Structural verdict = {structural_decision}")
+                    logger.append_history(f"Iteration {i}: Structural verdict = {structural_decision}")
+
+                    if structural_decision == "CONTINUE":
+                        # Structural failed — skip detailed, round fails
+                        logger.log(f"Iteration {i}: Structural checks FAILED — skipping detailed verification")
+                        logger.append_history(f"Iteration {i}: Decision = CONTINUE (structural failed)")
+                        await asyncio.sleep(2)
+                        continue
+
+                # Step 3/4: Detailed Verification (Phase 4)
+                # Find structural report file(s) to pass to detailed verification
+                structural_files = _find_verification_files(structural_dir)
+                if not structural_files:
+                    structural_files = [os.path.join(structural_dir, "verification_result.md")]
+
+                # Build structural_report_file reference for the detailed prompt
+                if len(structural_files) == 1:
+                    structural_report_ref = structural_files[0]
+                else:
+                    # Multiple structural reports (multi-verifier) — use the first as primary
+                    structural_report_ref = structural_files[0]
+
                 verifier_label = f" ({', '.join(verification_providers)})" if multi_verifier else ""
-                logger.update_status(i, max_iterations, f"2/3 Verification{verifier_label}", "RUNNING", "Running direct verification agent...")
-                logger.append_history(f"Iteration {i}: Direct verification started")
+                logger.update_status(i, max_iterations, f"3/{total_steps} Detailed Verification{verifier_label}", "RUNNING", "Running detailed verification agent...")
+                logger.append_history(f"Iteration {i}: Detailed verification started")
 
                 verification_files = await _run_multi_verification(
                     verifiers=verification_providers,
-                    prompt_template="proof_verify_direct.md",
+                    prompt_template="proof_verify_detailed.md",
                     prompt_kwargs=dict(
                         problem_file=problem_file,
                         proof_file=proof_file,
+                        structural_report_file=structural_report_ref,
                         output_dir=output_dir,
                     ),
-                    base_dir=round_dir,
+                    base_dir=detailed_dir,
                     prompts_dir=prompts_dir,
                     config=config or {},
                     claude_opts=claude_opts,
                     logger=logger,
                     tracker=tracker,
-                    call_name_prefix=f"Verification R{i}",
+                    call_name_prefix=f"Detailed Verification R{i}",
                     round_num=i,
                 )
-                logger.append_history(f"Iteration {i}: Direct verification completed")
+                logger.append_history(f"Iteration {i}: Detailed verification completed")
 
-                # Step 3/3: Verdict
-                logger.update_status(i, max_iterations, "3/3 Checking Verdict", "RUNNING", "Analyzing verification results...")
-                logger.append_history(f"Iteration {i}: Checking verdict")
+                # Step 4/4: Final Verdict
+                logger.update_status(i, max_iterations, f"4/{total_steps} Checking Verdict", "RUNNING", "Analyzing detailed verification results...")
+                logger.append_history(f"Iteration {i}: Checking final verdict")
 
-            # Build verdict prompt — supports single or multiple verification files
-            if len(verification_files) == 1:
-                verdict_prompt = load_prompt(
-                    prompts_dir, "verdict_proof.md",
-                    verification_result_file=f"Read the verification result file at `{verification_files[0]}`.",
-                )
-            else:
-                files_list = "\n".join(f"- `{f}`" for f in verification_files)
-                verdict_prompt = load_prompt(
-                    prompts_dir, "verdict_proof.md",
-                    verification_result_file=files_list,
-                )
-            decision = await run_agent_for_verdict(claude_opts, verdict_prompt, logger,
-                                                   tracker=tracker, call_name=f"Verdict R{i}")
+                # Build verdict prompt from detailed verification files
+                if len(verification_files) == 1:
+                    verdict_prompt = load_prompt(
+                        prompts_dir, "verdict_proof.md",
+                        verification_result_file=f"Read the verification result file at `{verification_files[0]}`.",
+                    )
+                else:
+                    files_list = "\n".join(f"- `{f}`" for f in verification_files)
+                    verdict_prompt = load_prompt(
+                        prompts_dir, "verdict_proof.md",
+                        verification_result_file=files_list,
+                    )
+                decision = await run_agent_for_verdict(claude_opts, verdict_prompt, logger,
+                                                       tracker=tracker, call_name=f"Verdict R{i}")
+
             logger.log(f"Iteration {i}: Decision is {decision}")
             logger.append_history(f"Iteration {i}: Decision = {decision}")
 
@@ -1748,7 +2018,11 @@ async def main():
         if skip_survey:
             print("    - Literature survey: SKIP (already complete)")
         if resume_from_step == "verification":
-            print(f"    - Proof loop: resuming round {start_round} from verification step")
+            print(f"    - Proof loop: resuming round {start_round} from structural verification step")
+        elif resume_from_step == "detailed_verification":
+            print(f"    - Proof loop: resuming round {start_round} from detailed verification step")
+        elif resume_from_step.startswith("parallel_"):
+            print(f"    - Proof loop: resuming round {start_round} from {resume_from_step}")
         elif start_round > 1:
             print(f"    - Proof loop: resuming from round {start_round}")
     print()
@@ -1808,8 +2082,8 @@ async def main():
     print("=" * 60)
     if resume_from_step.startswith("parallel_"):
         print(f"STAGE 1: Proof Search  [RESUMING round {start_round} from {resume_from_step}]")
-    elif resume_from_step == "verification":
-        print(f"STAGE 1: Proof Search  [RESUMING round {start_round} from verification]")
+    elif resume_from_step in ("verification", "detailed_verification"):
+        print(f"STAGE 1: Proof Search  [RESUMING round {start_round} from {resume_from_step}]")
     elif start_round > 1:
         print(f"STAGE 1: Proof Search  [RESUMING from round {start_round}]")
     else:

@@ -58,7 +58,8 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
     print("\n=== Test 1: Prompt files ===")
     prompt_files = [
         "literature_survey.md", "proof_search.md",
-        "proof_verify_direct.md", "proof_verify_easy.md",
+        "proof_verify_structural.md", "proof_verify_detailed.md",
+        "proof_verify_easy.md",
         "proof_select.md", "verdict_proof.md", "proof_effort_summary.md",
     ]
     for pf in prompt_files:
@@ -112,16 +113,37 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
 
     try:
         prompt = load_prompt(
-            prompts_dir, "proof_verify_direct.md",
+            prompts_dir, "proof_verify_structural.md",
             problem_file="/tmp/test_problem.tex",
             proof_file="/tmp/test_proof.md",
-            output_file="/tmp/test_verify.md",
+            output_file="/tmp/test_verify_structural.md",
             output_dir="/tmp/test_output",
-            error_file="/tmp/test_output/verification/round_1/error_proof_verify_direct.md",
+            error_file="/tmp/test_output/verification/round_1/error_proof_verify_structural.md",
         )
-        check("proof_verify_direct.md renders OK", "test_problem.tex" in prompt)
+        check("proof_verify_structural.md renders OK", "test_problem.tex" in prompt)
+        check("proof_verify_structural.md has Phase 1", "Phase 1" in prompt)
+        check("proof_verify_structural.md has Phase 3", "Phase 3" in prompt)
+        check("proof_verify_structural.md has no Phase 4 section",
+              "### Phase 4" not in prompt and "## Phase 4" not in prompt)
     except Exception as e:
-        check("proof_verify_direct.md renders OK", False, str(e))
+        check("proof_verify_structural.md renders OK", False, str(e))
+
+    try:
+        prompt = load_prompt(
+            prompts_dir, "proof_verify_detailed.md",
+            problem_file="/tmp/test_problem.tex",
+            proof_file="/tmp/test_proof.md",
+            structural_report_file="/tmp/test_structural_report.md",
+            output_file="/tmp/test_verify_detailed.md",
+            output_dir="/tmp/test_output",
+            error_file="/tmp/test_output/verification/round_1/error_proof_verify_detailed.md",
+        )
+        check("proof_verify_detailed.md renders OK", "test_problem.tex" in prompt)
+        check("proof_verify_detailed.md has Phase 4", "Phase 4" in prompt)
+        check("proof_verify_detailed.md references structural report",
+              "test_structural_report.md" in prompt)
+    except Exception as e:
+        check("proof_verify_detailed.md renders OK", False, str(e))
 
     try:
         prompt = load_prompt(
