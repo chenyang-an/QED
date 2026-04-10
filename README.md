@@ -4,7 +4,7 @@
 
 **Co-author:** Qihao Ye (<q8ye@ucsd.edu>)
 
-QED is a multi-agent pipeline that takes a mathematical problem statement in LaTeX and produces a rigorous natural-language proof. The pipeline orchestrates Claude (and optionally Codex and Gemini) through their respective CLIs via bash subprocesses — no agent framework is used. Both proof search and verification can use any configurable subset of models (Claude, Codex, Gemini) running in parallel. It performs stronger than chatbot versions of various models on math proving tasks, since it uses agentic loops to search, decompose, and verify math proofs instead of answering in one shot.
+QED is a multi-agent pipeline that takes a mathematical problem statement in LaTeX and produces a rigorous natural-language proof. The pipeline orchestrates Claude (and optionally Codex and Gemini) through their respective CLIs via bash subprocesses — no agent framework is used. Both proof search and verification can use any configurable subset of models (Claude, Codex, Gemini) running in parallel. It performs stronger than chatbot versions of various models on math proving tasks, since it uses agentic loops to search and verify math proofs instead of answering in one shot.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=proofQED/QED&type=Date&theme=dark" />
@@ -29,30 +29,28 @@ The pipeline runs in three stages. All model invocations are done by spawning CL
 
 **Stage 0 — Literature Survey.** A survey agent reads the problem and first evaluates its difficulty (Easy / Medium / Hard), then conducts an investigation of the mathematical landscape scaled to that difficulty: classifying the problem, identifying applicable theorems, and cataloguing related results. Easy problems get a brief survey; hard problems get the full treatment. The results are saved to `related_info/` for the proof agent to reference. The survey agent does NOT produce proof strategies — that is the proof search agent's job.
 
-**Stage 1 — Proof Search Loop.** An iterative loop runs up to `max_proof_iterations` rounds (default 9). The behavior adapts to the problem's difficulty and the `skip_decomposition` config setting.
+**Stage 1 — Proof Search Loop.** An iterative loop runs up to `max_proof_iterations` rounds (default 9). The behavior adapts to the problem's difficulty.
 
 Model selection is **solely determined by configuration** — the `multi_model.providers` list controls which models run proof search, and `verification_agents.providers` controls which models run verification. Difficulty classification affects only the survey depth and verification thoroughness, not which models are used.
 
-**Multi-model proof search + multi-model verification — 4 to 6 steps per round (parallel):**
+**Multi-model proof search + multi-model verification — 4 to 5 steps per round (parallel):**
 
 1. **Proof Search (parallel)** — All configured proof search providers (any subset of Claude, Codex, Gemini) attack the problem simultaneously. Each writes its own `proof.md` in an isolated subdirectory.
-2. **Decomposition (parallel)** — Claude decomposes all proofs into numbered **miniclaims** with dependency graphs. One decomposition per model's proof. *(Skipped when `skip_decomposition: true`)*
-3. **Verification (parallel, multi-verifier)** — Each proof is independently verified by ALL configured verification providers. For N proofs and M verifiers, this produces N×M verification reports. Each verification result is saved as `verification_result_<verifier>.md` in the respective proof subdirectory.
-4. **Selector Agent** — Reads all verification reports across all proofs and verifiers. Selects the single most promising proof based on: unanimous verifier agreement, problem-statement integrity, overall verdict, fewest failures, quality of partial progress, and structural completeness. A proof needs PASS from ALL verifiers to be considered fully verified. Writes `selection.md`. *(Skipped when only one proof search provider is configured — the single proof is used directly.)*
-5. **Apply Selection** — The winning proof is copied to the main `proof.md`.
-6. **Verdict Agent** — Reads all verification reports for the selected proof and returns `DONE` only if ALL verifiers passed, otherwise `CONTINUE`.
+2. **Verification (parallel, multi-verifier)** — Each proof is independently verified by ALL configured verification providers using direct verification. For N proofs and M verifiers, this produces N×M verification reports. Each verification result is saved as `verification_result_<verifier>.md` in the respective proof subdirectory.
+3. **Selector Agent** — Reads all verification reports across all proofs and verifiers. Selects the single most promising proof based on: unanimous verifier agreement, problem-statement integrity, overall verdict, fewest failures, quality of partial progress, and structural completeness. A proof needs PASS from ALL verifiers to be considered fully verified. Writes `selection.md`. *(Skipped when only one proof search provider is configured — the single proof is used directly.)*
+4. **Apply Selection** — The winning proof is copied to the main `proof.md`.
+5. **Verdict Agent** — Reads all verification reports for the selected proof and returns `DONE` only if ALL verifiers passed, otherwise `CONTINUE`.
 
-**Single-model proof search + single-model verification — 3 or 4 steps per round:**
+**Single-model proof search + single-model verification — 3 steps per round:**
 
 1. **Proof Search Agent** — Reads the problem, the literature survey, any previous-round feedback, and any human guidance from `human_help/`. Writes or refines a complete natural-language proof in `proof.md`.
-2. **Decomposition Agent** — Decomposes the proof into numbered miniclaims, each with a verbatim miniproof quote, dependency list, and type classification. Also produces a Proof Architecture. Writes `proof_decomposition.md`. *(Skipped when `skip_decomposition: true`)*
-3. **Verification Agent** — Verifies each miniclaim individually (logical validity, mathematical correctness, computational checks via SymPy/Z3/NumPy). Then verifies hierarchical composition and runs global checks. Writes `verification_result.md`.
-4. **Verdict Agent** — Reads the verification result and returns `DONE` or `CONTINUE`.
+2. **Verification Agent** — Directly verifies the proof for logical validity, mathematical correctness, computational checks, problem-statement integrity, and structural completeness. Writes `verification_result.md`.
+3. **Verdict Agent** — Reads the verification result and returns `DONE` or `CONTINUE`.
 
 **Easy problems — 3 steps per round:**
 
 1. **Proof Search Agent** — Same as above.
-2. **Verification Agent (lightweight)** — Skips decomposition. Does a direct read-through checking logical flow, correctness, completeness, and problem-statement integrity. Writes `verification_result.md`.
+2. **Verification Agent (lightweight)** — Does a lightweight direct read-through checking logical flow, correctness, completeness, and problem-statement integrity. Writes `verification_result.md`.
 3. **Verdict Agent** — Same as above.
 
 If the verdict is `DONE`, the pipeline stops. Otherwise the next round begins, with the proof search agent reading the previous round's verification feedback and proof status log to avoid repeating failed approaches.
@@ -80,9 +78,9 @@ All agents receive `skill/super_math_skill.md` as a system-level instruction —
 
 The proof search agent reads both sources at the start of every round. Per-round guidance is especially useful for pointing out specific errors in the previous round's proof or suggesting a different strategy based on what you observed.
 
-**Resume support.** If the pipeline is interrupted and re-run with the same output directory, it automatically detects prior progress: skips the literature survey if complete, detects which step within a round was last completed (including parallel steps), cleans up incomplete state, restores `proof.md` from backup if needed, and resumes from exactly where it left off. Resume detection respects the `skip_decomposition` setting and multi-verifier configuration — verification is only considered complete when ALL expected verification files exist (one per configured verifier per configured proof provider).
+**Resume support.** If the pipeline is interrupted and re-run with the same output directory, it automatically detects prior progress: skips the literature survey if complete, detects which step within a round was last completed (including parallel steps), cleans up incomplete state, restores `proof.md` from backup if needed, and resumes from exactly where it left off. Resume detection respects the multi-verifier configuration — verification is only considered complete when ALL expected verification files exist (one per configured verifier per configured proof provider).
 
-**Post-call file checks.** After every agent call, the pipeline verifies that all expected output files were created (proof, proof status, verification result, decomposition, error log, etc.). If any expected file is missing, the pipeline logs a fatal error and stops immediately — it does not silently continue with missing artifacts.
+**Post-call file checks.** After every agent call, the pipeline verifies that all expected output files were created (proof, proof status, verification result, error log, etc.). If any expected file is missing, the pipeline logs a fatal error and stops immediately — it does not silently continue with missing artifacts.
 
 **Error handling.** When a model runner (Claude, Codex, or Gemini CLI) fails, the pipeline logs detailed error information including: provider name, error type (subprocess error, non-zero exit code, or empty response), exit code, stderr output, and stdout output. This helps diagnose issues with specific providers during multi-model runs.
 
@@ -107,9 +105,7 @@ proof_agent/
 ├── prompts/
 │   ├── literature_survey.md           # Stage 0: literature survey agent prompt
 │   ├── proof_search.md               # Stage 1: proof search agent prompt
-│   ├── proof_decompose.md            # Stage 1: decomposition agent prompt (medium/hard, normal mode)
-│   ├── proof_verify.md               # Stage 1: full verification prompt (requires decomposition)
-│   ├── proof_verify_direct.md        # Stage 1: direct verification prompt (skip_decomposition mode)
+│   ├── proof_verify_direct.md        # Stage 1: direct verification prompt (medium/hard)
 │   ├── proof_verify_easy.md          # Stage 1: lightweight verification prompt (easy)
 │   ├── proof_select.md              # Stage 1: selector agent prompt (multi-model only)
 │   ├── verdict_proof.md              # Stage 1: verdict agent prompt
@@ -133,8 +129,6 @@ Each prompt file in `prompts/` is a Markdown template with `{placeholder}` varia
 |--------|-------------|
 | `literature_survey.md` | `problem_file`, `related_info_dir`, `output_dir`, `error_file` |
 | `proof_search.md` | `problem_file`, `proof_file`, `output_dir`, `related_info_dir`, `round_num`, `proof_status_file`, `previous_round_instructions`, `human_help_dir`, `prev_round_human_help_dir`, `skill_file`, `error_file` |
-| `proof_decompose.md` | `problem_file`, `proof_file`, `output_file`, `output_dir`, `error_file` |
-| `proof_verify.md` | `problem_file`, `proof_file`, `decomposition_file`, `output_file`, `output_dir`, `error_file` |
 | `proof_verify_direct.md` | `problem_file`, `proof_file`, `output_file`, `output_dir`, `error_file` |
 | `proof_verify_easy.md` | `problem_file`, `proof_file`, `output_file`, `output_dir`, `error_file` |
 | `proof_select.md` | `problem_file`, `verify_claude`, `verify_codex`, `verify_gemini`, `proof_claude`, `proof_codex`, `proof_gemini`, `selection_file`, `error_file` |
@@ -176,10 +170,8 @@ Given an output directory `<output>/`, a complete run produces:
 │   ├── round_1/
 │   │   ├── proof_before_round.md      #   Backup of proof.md before this round
 │   │   ├── proof_status.md            #   Proof search agent's log of what it tried
-│   │   ├── proof_decomposition.md     #   Miniclaim breakdown (normal mode only, absent when skip_decomposition)
 │   │   ├── verification_result.md     #   Verification verdict
 │   │   ├── error_proof_search.md      #   Error log for proof search (empty if no errors)
-│   │   ├── error_proof_decompose.md   #   Error log for decomposition (absent when skip_decomposition)
 │   │   ├── error_proof_verify*.md     #   Error log for verification (suffix matches verify variant used)
 │   │   └── human_help/
 │   │       └── human_help.md          #   Per-round human guidance (read by next round's proof search)
@@ -208,32 +200,26 @@ verification/
     claude/                            # Claude's proof attempt (if claude in multi_model.providers)
       proof.md                         # Claude's proof
       proof_status.md                  # Claude's approach log
-      proof_decomposition.md           # Decomposition (absent when skip_decomposition)
       verification_result_claude.md    # Claude verifier's report (if claude in verification_agents)
       verification_result_codex.md     # Codex verifier's report (if codex in verification_agents)
       verification_result_gemini.md    # Gemini verifier's report (if gemini in verification_agents)
       error_proof_search.md            # Error log for proof search
-      error_proof_decompose.md         # Error log for decomposition (absent when skip_decomposition)
       error_proof_verify*.md           # Error logs for verification
     codex/                             # Codex's proof attempt (if codex in multi_model.providers)
       proof.md
       proof_status.md
-      proof_decomposition.md           # Absent when skip_decomposition
       verification_result_claude.md    # Each verifier produces its own report
       verification_result_codex.md
       verification_result_gemini.md
       error_proof_search.md
-      error_proof_decompose.md         # Absent when skip_decomposition
       error_proof_verify*.md
     gemini/                            # Gemini's proof attempt (if gemini in multi_model.providers)
       proof.md
       proof_status.md
-      proof_decomposition.md           # Absent when skip_decomposition
       verification_result_claude.md
       verification_result_codex.md
       verification_result_gemini.md
       error_proof_search.md
-      error_proof_decompose.md         # Absent when skip_decomposition
       error_proof_verify*.md
 ```
 
@@ -378,7 +364,6 @@ pip install pyyaml
 #    - Set Claude provider (subscription/bedrock/api_key)
 #    - Set multi_model.enabled and providers list for parallel proof search
 #    - Set verification_agents.enabled and providers list for multi-verifier
-#    - Set skip_decomposition to true/false
 #    - Configure codex/gemini sections if using those providers
 #    - Set gemini.api_key if using Gemini (get key from Google AI Studio)
 
@@ -450,9 +435,9 @@ python code/smoke_test.py
 ```
 
 It checks:
-1. All 9 prompt files exist
+1. All 7 prompt files exist
 2. All skill files exist
-3. All 9 prompt templates render without errors (every `{placeholder}` has a matching value)
+3. All 7 prompt templates render without errors (every `{placeholder}` has a matching value)
 4. Skill file loads correctly
 5. Claude CLI is installed and responds correctly (via `claude -p` subprocess, matching how the pipeline calls it)
 6. Config file has required fields (`max_proof_iterations`, `claude`)
@@ -483,7 +468,6 @@ cat <output>/literature_survey_log/AUTO_RUN_LOG.txt
 cat <output>/summary_log/AUTO_RUN_LOG.txt
 
 # Check a specific round's artifacts
-cat <output>/verification/round_1/proof_decomposition.md
 cat <output>/verification/round_1/verification_result.md
 
 # Multi-model: check per-model proofs and selection
@@ -504,10 +488,6 @@ cat <output>/verification/round_1/claude/verification_result_gemini.md
 ```yaml
 pipeline:
   max_proof_iterations: 9       # Max rounds before stopping. Default: 9.
-  skip_decomposition: false     # true: skip decomposition step for medium/hard problems,
-                                #   use direct verification (proof_verify_direct.md).
-                                #   Easy problems are unaffected.
-                                # false: normal mode with decomposition → verification.
 
   # Multi-model parallel proof search.
   # When enabled: listed providers run proof search in parallel each round,
@@ -586,18 +566,12 @@ This pipeline runs Claude CLI with `--dangerously-skip-permissions`. This means 
          Easy             Single-model        Multi-model
            |                   |             (providers from config)
            v                   v                   |
-    [3-step round]     [3 or 4-step round]        |
-                        depends on                 |
-                     skip_decomposition            |
+    [3-step round]       [3-step round]            |
                                |                   v
                                |    +------ Proof Search (parallel) ------+
                                |    |   providers from multi_model.providers
                                |    |   (any subset of Claude/Codex/Gemini)
                                |    +-------------------------------------+
-                               |                   |
-                               |     [if skip_decomposition: skip]
-                               |                   |
-                               |       N decompositions (Claude, parallel)
                                |                   |
                                |    +------ Verification (parallel) ------+
                                |    |   Each proof × each verifier from
@@ -641,15 +615,11 @@ flowchart TD
 
     E --> H["3-step round"]
 
-    F --> I["3 or 4-step round<br/>depends on skip_decomposition"]
+    F --> I["3-step round"]
     I --> J["Verdict Agent<br/>(DONE / CONTINUE)"]
 
     G --> K["Proof Search (parallel)<br/>providers from multi_model.providers"]
-    K --> L{"skip_decomposition?"}
-    L -->|No| M["N decompositions<br/>(Claude, parallel)"]
-    L -->|Yes| N["Skip decomposition"]
-    M --> O["Verification (parallel)<br/>N proofs × M verifiers"]
-    N --> O
+    K --> O["Verification (parallel)<br/>N proofs × M verifiers"]
     O --> P["Selector Agent<br/>picks best proof; requires unanimous PASS<br/>(skipped when single provider)"]
     P --> J
 

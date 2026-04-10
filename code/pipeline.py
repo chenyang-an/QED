@@ -6,9 +6,8 @@ Three-stage pipeline:
   Stage 0 — Literature Survey agent: deep-dives into the problem context and related results
   Stage 1 — Proof Search Loop (iterative, up to max_proof_iterations rounds):
     1a. Proof Search agent    — writes/refines the proof (informed by the survey)
-    1b. Decomposition agent   — decomposes the proof into miniclaims/miniproofs
-    1c. Verification agent    — checks each miniclaim and the full proof for correctness
-    1d. Verdict agent         — decides DONE or CONTINUE
+    1b. Verification agent    — directly verifies the proof for correctness
+    1c. Verdict agent         — decides DONE or CONTINUE
   Stage 2 — Summary agent: reads all generated files and writes proof_effort_summary.md
 
 Supports resuming interrupted runs: detects prior progress on disk, skips
@@ -337,7 +336,6 @@ def _parallel_round_complete(round_dir: str) -> bool:
 
 def detect_resume_state(
     output_dir: str,
-    skip_decomposition: bool = False,
     verification_providers: list[str] | None = None,
     proof_providers: list[str] | None = None,
 ) -> tuple[bool, int, str]:
@@ -349,23 +347,17 @@ def detect_resume_state(
         1 means no prior rounds exist.
       - resume_from_step: which step to resume from within start_round.
 
-        For **single-model** (easy/medium) rounds:
+        For **single-model** rounds:
           "proof_search"   — start the round from scratch
-          "decomposition"  — proof search done, resume from decomposition
-          "verification"   — proof search + decomposition done, resume from verification
+          "verification"   — proof search done, resume from verification
 
-        For **parallel** (hard) rounds:
+        For **parallel** rounds:
           "proof_search"   — start the round from scratch
-          "parallel_decomposition"  — proof searches done, resume from decomposition
-          "parallel_verification"   — decompositions done, resume from verification
+          "parallel_verification"   — proof searches done, resume from verification
           "parallel_selection"      — verifications done, resume from selector
-
-        When skip_decomposition=True, "decomposition" and "parallel_decomposition"
-        are never returned — rounds go directly from proof search to verification.
 
     Args:
         output_dir: Path to the output directory.
-        skip_decomposition: Whether decomposition step is skipped.
         verification_providers: List of verifier names (e.g., ["claude", "codex", "gemini"]).
             Used to check that ALL expected verification files exist.
         proof_providers: List of proof search providers (e.g., ["claude", "codex", "gemini"]).
@@ -430,7 +422,6 @@ def detect_resume_state(
 
         # Check per-model completion to find resume point
         models_with_proof = []
-        models_with_decomp = []
         models_with_verify = []
         models_with_partial_verify = []
         for m in proof_providers:
@@ -439,8 +430,6 @@ def detect_resume_state(
                 continue
             if _file_nonempty(os.path.join(mdir, "proof_status.md")):
                 models_with_proof.append(m)
-            if _file_nonempty(os.path.join(mdir, "proof_decomposition.md")):
-                models_with_decomp.append(m)
             if _has_all_verifications(mdir):
                 models_with_verify.append(m)
             elif _find_verification_files(mdir):
@@ -464,19 +453,9 @@ def detect_resume_state(
             print(f"  Round {last}: partial verifications found for {models_with_partial_verify} — will resume from verification")
             return skip_survey, last, "parallel_verification"
 
-        if skip_decomposition:
-            # No decomposition step — go directly from proof search to verification
-            if models_with_proof:
-                print(f"  Round {last}: proof search complete, verification incomplete — will resume from verification")
-                return skip_survey, last, "parallel_verification"
-        else:
-            if len(models_with_decomp) >= len(models_with_proof) and models_with_decomp:
-                print(f"  Round {last}: decompositions complete, verification incomplete — will resume from verification")
-                return skip_survey, last, "parallel_verification"
-
-            if models_with_proof:
-                print(f"  Round {last}: proof search complete for {models_with_proof}, decomposition incomplete — will resume from decomposition")
-                return skip_survey, last, "parallel_decomposition"
+        if models_with_proof:
+            print(f"  Round {last}: proof search complete, verification incomplete — will resume from verification")
+            return skip_survey, last, "parallel_verification"
 
         # No proof search completed — delete and restart
         proof_file = os.path.join(output_dir, "proof.md")
@@ -490,30 +469,15 @@ def detect_resume_state(
 
     # ====== Single-model (easy/medium) round ======
     status_ok = _file_nonempty(os.path.join(last_dir, "proof_status.md"))
-    decomp_ok = _file_nonempty(os.path.join(last_dir, "proof_decomposition.md"))
     verify_ok = bool(_find_verification_files(last_dir))
 
-    if skip_decomposition:
-        # No decomposition file expected — only check proof_status and verification
-        if status_ok and verify_ok:
-            return skip_survey, last + 1, "proof_search"
-        if status_ok and not verify_ok:
-            print(f"  Round {last}: proof search complete, verification incomplete — will resume from verification")
-            return skip_survey, last, "verification"
-    else:
-        if status_ok and decomp_ok and verify_ok:
-            # Last round is fully complete — resume from the next one.
-            return skip_survey, last + 1, "proof_search"
+    if status_ok and verify_ok:
+        # Last round is fully complete — resume from the next one.
+        return skip_survey, last + 1, "proof_search"
 
-        if status_ok and decomp_ok and not verify_ok:
-            # Proof search + decomposition completed but verification didn't.
-            print(f"  Round {last}: decomposition complete, verification incomplete — will resume from verification")
-            return skip_survey, last, "verification"
-
-        if status_ok and not decomp_ok:
-            # Proof search completed but decomposition didn't.
-            print(f"  Round {last}: proof search complete, decomposition incomplete — will resume from decomposition")
-            return skip_survey, last, "decomposition"
+    if status_ok and not verify_ok:
+        print(f"  Round {last}: proof search complete, verification incomplete — will resume from verification")
+        return skip_survey, last, "verification"
 
     # Proof search didn't complete — delete the round and restore proof.md.
     proof_file = os.path.join(output_dir, "proof.md")
@@ -860,7 +824,7 @@ async def run_auxiliary_agent(
     call_name: str = "",
     instructions: str | None = None,
 ) -> str:
-    """Run an auxiliary agent (literature survey, decomposition, selection, summary).
+    """Run an auxiliary agent (literature survey, selection, summary).
 
     Dispatches to the configured provider (claude, codex, or gemini).
     Falls back to Claude if the provider is unrecognized.
@@ -1104,14 +1068,11 @@ async def _run_parallel_round(
     human_help_dir: str,
     prev_round_human_help_dir: str = "",
     resume_from_step: str = "proof_search",
-    skip_decomposition: bool = False,
     verification_providers: list[str] | None = None,
 ) -> str:
     """Execute one parallel round for hard-mode. Returns 'DONE' or 'CONTINUE'.
 
-    Steps: parallel proof search → parallel decomposition → parallel verification
-           → selector → verdict.
-    When skip_decomposition=True, the decomposition step is skipped entirely.
+    Steps: parallel proof search → parallel verification → selector → verdict.
     """
     import asyncio as _asyncio
     from model_runner import run_model
@@ -1152,20 +1113,17 @@ async def _run_parallel_round(
         prev_instructions = "- This is the first round. No previous round data available.\n"
 
     skip_proof_search = resume_from_step in (
-        "parallel_decomposition", "parallel_verification", "parallel_selection",
-    )
-    skip_decomp_resume = resume_from_step in (
         "parallel_verification", "parallel_selection",
     )
     skip_verification = resume_from_step == "parallel_selection"
 
     single_provider = len(providers) == 1
-    # When only one provider, skip selector agent (steps: search, [decompose], verify, copy, verdict)
-    # When multiple providers: search, [decompose], verify, select, copy, verdict
+    # When only one provider, skip selector agent (steps: search, verify, copy, verdict)
+    # When multiple providers: search, verify, select, copy, verdict
     if single_provider:
-        total_steps = 4 if skip_decomposition else 5
+        total_steps = 4
     else:
-        total_steps = 5 if skip_decomposition else 6
+        total_steps = 5
     step = 0
 
     # ==================================================================
@@ -1234,93 +1192,28 @@ async def _run_parallel_round(
         logger.append_history(f"Iteration {i}: Parallel proof search completed")
 
     # ==================================================================
-    # Step 2: PARALLEL DECOMPOSITION (all Claude) — skipped when skip_decomposition
-    # ==================================================================
-    if skip_decomposition:
-        logger.log(f"--- Round {i}: skipping decomposition (skip_decomposition enabled) ---")
-        logger.append_history(f"Iteration {i}: Parallel decomposition SKIPPED (config)")
-    elif skip_decomp_resume:
-        logger.log(f"--- Resuming round {i}: skipping decomposition (already complete) ---")
-        logger.append_history(f"Iteration {i}: Parallel decomposition SKIPPED (resume)")
-    else:
-        # Get decomposition provider from config (default to claude)
-        decomp_provider = config.get("pipeline", {}).get("proof_decompose", {}).get("provider", "claude")
-        step += 1
-        logger.update_status(i, max_iterations, f"{step}/{total_steps} Parallel Decomposition", "RUNNING",
-                             f"Decomposing {len(providers)} proofs in parallel ({decomp_provider})...")
-        logger.append_history(f"Iteration {i}: Parallel decomposition started")
-
-        async def _decompose(proof_provider):
-            mdir = model_dirs[proof_provider]
-            m_proof = os.path.join(mdir, "proof.md")
-            m_decomp = os.path.join(mdir, "proof_decomposition.md")
-            decomp_prompt = load_prompt(
-                prompts_dir, "proof_decompose.md",
-                problem_file=problem_file,
-                proof_file=m_proof,
-                output_file=m_decomp,
-                output_dir=output_dir,
-                error_file=os.path.join(mdir, "error_proof_decompose.md"),
-            )
-            decomp_prompt += f"\n\nThis is round {i}. Decomposing {proof_provider}'s proof. Write to {m_decomp}."
-            response = await run_auxiliary_agent(
-                provider=decomp_provider,
-                prompt=decomp_prompt,
-                working_dir=claude_opts.get("cwd", output_dir),
-                config=config,
-                claude_opts=claude_opts,
-                logger=logger,
-                tracker=tracker,
-                call_name=f"Decomposition R{i} [{proof_provider}]",
-            )
-            _fallback_save_response(response,
-                [os.path.join(mdir, "proof_decomposition.md")],
-                [os.path.join(mdir, "error_proof_decompose.md")],
-                logger, step_name=f"Decomposition R{i} [{proof_provider}]")
-
-        await _asyncio.gather(*[_decompose(p) for p in providers])
-        for p in providers:
-            mdir = model_dirs[p]
-            _check_expected_files([
-                (os.path.join(mdir, "proof_decomposition.md"), f"{p} decomposition"),
-                (os.path.join(mdir, "error_proof_decompose.md"), f"{p} error log"),
-            ], logger, f"Parallel Decomposition R{i} [{p}]")
-        logger.append_history(f"Iteration {i}: Parallel decomposition completed")
-
-    # ==================================================================
-    # Step 3 (or 2 if skip_decomposition): PARALLEL VERIFICATION
+    # Step 2: PARALLEL VERIFICATION
     # ==================================================================
     step += 1
     if skip_verification:
         logger.log(f"--- Resuming round {i}: skipping verification (already complete) ---")
         logger.append_history(f"Iteration {i}: Parallel verification SKIPPED (resume)")
     else:
-        verify_label = "direct" if skip_decomposition else "full"
         verifier_names = ", ".join(verification_providers)
-        logger.update_status(i, max_iterations, f"{step}/{total_steps} Parallel Verification ({verify_label})", "RUNNING",
+        logger.update_status(i, max_iterations, f"{step}/{total_steps} Parallel Verification", "RUNNING",
                              f"Verifying {len(providers)} proofs × {len(verification_providers)} verifiers...")
-        logger.append_history(f"Iteration {i}: Parallel verification started ({verify_label}, verifiers: {verifier_names})")
+        logger.append_history(f"Iteration {i}: Parallel verification started (verifiers: {verifier_names})")
 
         async def _verify_proof_for_model(proof_provider):
             mdir = model_dirs[proof_provider]
             m_proof = os.path.join(mdir, "proof.md")
 
-            if skip_decomposition:
-                template = "proof_verify_direct.md"
-                kwargs = dict(
-                    problem_file=problem_file,
-                    proof_file=m_proof,
-                    output_dir=output_dir,
-                )
-            else:
-                m_decomp = os.path.join(mdir, "proof_decomposition.md")
-                template = "proof_verify.md"
-                kwargs = dict(
-                    problem_file=problem_file,
-                    proof_file=m_proof,
-                    decomposition_file=m_decomp,
-                    output_dir=output_dir,
-                )
+            template = "proof_verify_direct.md"
+            kwargs = dict(
+                problem_file=problem_file,
+                proof_file=m_proof,
+                output_dir=output_dir,
+            )
 
             await _run_multi_verification(
                 verifiers=verification_providers,
@@ -1340,7 +1233,7 @@ async def _run_parallel_round(
         logger.append_history(f"Iteration {i}: Parallel verification completed")
 
     # ==================================================================
-    # Step 4 (or 3): SELECTOR AGENT — only when multiple providers
+    # Step 3: SELECTOR AGENT — only when multiple providers
     # ==================================================================
     selection_file = os.path.join(round_dir, "selection.md")
 
@@ -1408,7 +1301,7 @@ async def _run_parallel_round(
         selected_model = _parse_selected_model(selection_file, providers)
 
     # ==================================================================
-    # Step 5 (or 4): Copy selected proof to main proof.md
+    # Step 4: Copy selected proof to main proof.md
     # ==================================================================
     step += 1
     logger.update_status(i, max_iterations, f"{step}/{total_steps} Applying Selection", "RUNNING",
@@ -1421,7 +1314,7 @@ async def _run_parallel_round(
         shutil.copy2(selected_proof, proof_file)
 
     # ==================================================================
-    # Step 6 (or 5): VERDICT AGENT (Claude) — uses selected model's verification(s)
+    # Step 5: VERDICT AGENT (Claude) — uses selected model's verification(s)
     # ==================================================================
     step += 1
     selected_mdir = os.path.join(round_dir, selected_model)
@@ -1478,30 +1371,24 @@ async def run_proof_loop(
     resume_from_step: str = "proof_search",
     difficulty: str = "unknown",
     multi_model_config: dict | None = None,
-    skip_decomposition: bool = False,
     verification_providers: list[str] | None = None,
     config: dict | None = None,
 ) -> bool:
-    """Run the proof search/decomposition/verification/verdict loop.
+    """Run the proof search/verification/verdict loop.
 
     Args:
         start_round: Round number to begin from (for resume support).
             Rounds before this are assumed already complete on disk.
         resume_from_step: Which step to resume from within start_round:
             "proof_search"  — start the round from scratch
-            "decomposition" — skip proof search, start from decomposition
-            "verification"  — skip proof search + decomposition, start from verification
-            "parallel_decomposition" — parallel round, skip proof search
-            "parallel_verification"  — parallel round, skip proof search + decomposition
+            "verification"  — skip proof search, start from verification
+            "parallel_verification"  — parallel round, skip proof search
             "parallel_selection"     — parallel round, skip to selector
         difficulty: Problem difficulty from the literature survey
-            ("easy", "medium", "hard", or "unknown"). Easy problems skip
-            decomposition and use a lightweight verification prompt.
+            ("easy", "medium", "hard", or "unknown"). Easy problems use
+            a lightweight verification prompt.
         multi_model_config: Dict with keys "providers" (list[str]), "config" (full
-            config dict). When set and difficulty is hard, enables parallel
-            multi-model proof search.
-        skip_decomposition: When True, non-easy problems skip the decomposition
-            step and use direct verification (proof_verify_direct.md).
+            config dict). When set, enables parallel multi-model proof search.
 
     Returns True if successful (DONE), False if max iterations reached.
     """
@@ -1603,7 +1490,6 @@ async def run_proof_loop(
                 human_help_dir=human_help_dir,
                 prev_round_human_help_dir=prev_round_hh_dir,
                 resume_from_step=round_resume,
-                skip_decomposition=skip_decomposition,
                 verification_providers=verification_providers,
             )
 
@@ -1617,17 +1503,15 @@ async def run_proof_loop(
             # SINGLE-MODEL MODE (easy / medium / unknown)
             # ==============================================================
             proof_status_file = os.path.join(round_dir, "proof_status.md")
-            decomp_file = os.path.join(round_dir, "proof_decomposition.md")
 
             prev_verify_files_list = _find_verification_files(os.path.join(verify_dir, f"round_{i-1}"))
             prev_proof_status = os.path.join(verify_dir, f"round_{i-1}", "proof_status.md")
 
             # Determine which steps to skip for this round (resume case)
-            skip_proof_search = (i == start_round and resume_from_step in ("decomposition", "verification"))
-            skip_decomp_resume = (i == start_round and resume_from_step == "verification")
+            skip_proof_search = (i == start_round and resume_from_step == "verification")
 
-            # Step labels depend on mode: easy/skip_decomp = 3 steps, normal = 4 steps
-            total_steps = 3 if (easy_mode or skip_decomposition) else 4
+            # Step labels: 3 steps (search, verify, verdict)
+            total_steps = 3
 
             # ------------------------------------------------------------------
             # Step 1: Proof Search
@@ -1683,7 +1567,7 @@ async def run_proof_loop(
 
             if easy_mode:
                 # ==============================================================
-                # EASY MODE: skip decomposition, use lightweight verification
+                # EASY MODE: use lightweight verification
                 # ==============================================================
 
                 # Step 2/3: Easy Verification
@@ -1714,14 +1598,14 @@ async def run_proof_loop(
                 logger.update_status(i, max_iterations, "3/3 Checking Verdict", "RUNNING", "Analyzing verification results...")
                 logger.append_history(f"Iteration {i}: Checking verdict")
 
-            elif skip_decomposition:
+            else:
                 # ==============================================================
-                # SKIP-DECOMPOSITION MODE: direct verification (no miniclaims)
+                # NON-EASY MODE: direct verification → verdict
                 # ==============================================================
 
                 # Step 2/3: Direct Verification
                 verifier_label = f" ({', '.join(verification_providers)})" if multi_verifier else ""
-                logger.update_status(i, max_iterations, f"2/3 Verification (direct){verifier_label}", "RUNNING", "Running direct verification agent...")
+                logger.update_status(i, max_iterations, f"2/3 Verification{verifier_label}", "RUNNING", "Running direct verification agent...")
                 logger.append_history(f"Iteration {i}: Direct verification started")
 
                 verification_files = await _run_multi_verification(
@@ -1738,86 +1622,13 @@ async def run_proof_loop(
                     claude_opts=claude_opts,
                     logger=logger,
                     tracker=tracker,
-                    call_name_prefix=f"Verification (direct) R{i}",
+                    call_name_prefix=f"Verification R{i}",
                     round_num=i,
                 )
                 logger.append_history(f"Iteration {i}: Direct verification completed")
 
                 # Step 3/3: Verdict
                 logger.update_status(i, max_iterations, "3/3 Checking Verdict", "RUNNING", "Analyzing verification results...")
-                logger.append_history(f"Iteration {i}: Checking verdict")
-
-            else:
-                # ==============================================================
-                # NORMAL MODE: decomposition → full verification → verdict
-                # ==============================================================
-
-                # Step 2/4: Proof Decomposition
-                if skip_decomp_resume:
-                    logger.log(f"--- Resuming round {i}: skipping decomposition (already complete) ---")
-                    logger.append_history(f"Iteration {i}: Decomposition SKIPPED (resume)")
-                else:
-                    # Get decomposition provider from config (default to claude)
-                    decomp_provider = (config or {}).get("pipeline", {}).get("proof_decompose", {}).get("provider", "claude")
-                    logger.update_status(i, max_iterations, "2/4 Decomposition", "RUNNING", f"Running decomposition agent ({decomp_provider})...")
-                    logger.append_history(f"Iteration {i}: Decomposition started")
-
-                    decomp_prompt = load_prompt(
-                        prompts_dir, "proof_decompose.md",
-                        problem_file=problem_file,
-                        proof_file=proof_file,
-                        output_file=decomp_file,
-                        output_dir=output_dir,
-                        error_file=os.path.join(round_dir, "error_proof_decompose.md"),
-                    )
-                    decomp_prompt += f"\n\nThis is round {i}. Write decomposition to {decomp_file}."
-
-                    response = await run_auxiliary_agent(
-                        provider=decomp_provider,
-                        prompt=decomp_prompt,
-                        working_dir=claude_opts.get("cwd", output_dir),
-                        config=config or {},
-                        claude_opts=claude_opts,
-                        logger=logger,
-                        tracker=tracker,
-                        call_name=f"Decomposition R{i}",
-                    )
-                    _fallback_save_response(response, [decomp_file],
-                        [os.path.join(round_dir, "error_proof_decompose.md")],
-                        logger, step_name=f"Decomposition R{i}")
-                    _check_expected_files([
-                        (decomp_file, "decomposition"),
-                        (os.path.join(round_dir, "error_proof_decompose.md"), "error log"),
-                    ], logger, f"Decomposition R{i}")
-                    logger.append_history(f"Iteration {i}: Decomposition completed")
-
-                # Step 3/4: Verification
-                verifier_label = f" ({', '.join(verification_providers)})" if multi_verifier else ""
-                logger.update_status(i, max_iterations, f"3/4 Verification{verifier_label}", "RUNNING", "Running verification agent...")
-                logger.append_history(f"Iteration {i}: Verification started")
-
-                verification_files = await _run_multi_verification(
-                    verifiers=verification_providers,
-                    prompt_template="proof_verify.md",
-                    prompt_kwargs=dict(
-                        problem_file=problem_file,
-                        proof_file=proof_file,
-                        decomposition_file=decomp_file,
-                        output_dir=output_dir,
-                    ),
-                    base_dir=round_dir,
-                    prompts_dir=prompts_dir,
-                    config=config or {},
-                    claude_opts=claude_opts,
-                    logger=logger,
-                    tracker=tracker,
-                    call_name_prefix=f"Verification R{i}",
-                    round_num=i,
-                )
-                logger.append_history(f"Iteration {i}: Verification completed")
-
-                # Step 4/4: Verdict
-                logger.update_status(i, max_iterations, "4/4 Checking Verdict", "RUNNING", "Analyzing verification results...")
                 logger.append_history(f"Iteration {i}: Checking verdict")
 
             # Build verdict prompt — supports single or multiple verification files
@@ -1868,8 +1679,6 @@ async def main():
     pipeline_cfg = config.get("pipeline", {})
     claude_cfg = config.get("claude", {})
     max_proof = pipeline_cfg.get("max_proof_iterations", 9)
-    # proof_decompose.enabled=true means run decomposition, so skip_decomp is the inverse
-    skip_decomp = not pipeline_cfg.get("proof_decompose", {}).get("enabled", True)
 
     problem_file = os.path.abspath(args.input)
     output_dir = os.path.abspath(args.output)
@@ -1921,7 +1730,7 @@ async def main():
     # Detect resume state
     # -------------------------------------------------------
     skip_survey, start_round, resume_from_step = detect_resume_state(
-        output_dir, skip_decomp,
+        output_dir,
         verification_providers=verification_providers,
         proof_providers=proof_providers,
     )
@@ -1933,16 +1742,12 @@ async def main():
     print(f"  Output:     {output_dir}")
     print(f"  Max rounds: {max_proof}")
     print(f"  Token log:  {tracker.md_path}")
-    if skip_decomp:
-        print(f"  Skip decomposition: ON (direct verification for medium/hard)")
     if skip_survey or start_round > 1 or resume_from_step != "proof_search":
         print()
         print("  RESUMING previous run:")
         if skip_survey:
             print("    - Literature survey: SKIP (already complete)")
-        if resume_from_step == "decomposition":
-            print(f"    - Proof loop: resuming round {start_round} from decomposition step")
-        elif resume_from_step == "verification":
+        if resume_from_step == "verification":
             print(f"    - Proof loop: resuming round {start_round} from verification step")
         elif start_round > 1:
             print(f"    - Proof loop: resuming from round {start_round}")
@@ -1974,7 +1779,7 @@ async def main():
     if difficulty != "unknown":
         print(f"  Difficulty: {difficulty.upper()}")
         if difficulty == "easy":
-            print("  (Easy mode: skipping decomposition, using lightweight verification)")
+            print("  (Easy mode: using lightweight verification)")
     print()
 
     # -------------------------------------------------------
@@ -2003,8 +1808,6 @@ async def main():
     print("=" * 60)
     if resume_from_step.startswith("parallel_"):
         print(f"STAGE 1: Proof Search  [RESUMING round {start_round} from {resume_from_step}]")
-    elif resume_from_step == "decomposition":
-        print(f"STAGE 1: Proof Search  [RESUMING round {start_round} from decomposition]")
     elif resume_from_step == "verification":
         print(f"STAGE 1: Proof Search  [RESUMING round {start_round} from verification]")
     elif start_round > 1:
@@ -2022,7 +1825,6 @@ async def main():
         resume_from_step=resume_from_step,
         difficulty=difficulty,
         multi_model_config=multi_model_config,
-        skip_decomposition=skip_decomp,
         verification_providers=verification_providers,
         config=config,
     )

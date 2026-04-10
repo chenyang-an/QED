@@ -57,8 +57,8 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
     # -------------------------------------------------------
     print("\n=== Test 1: Prompt files ===")
     prompt_files = [
-        "literature_survey.md", "proof_search.md", "proof_decompose.md",
-        "proof_verify.md", "proof_verify_direct.md", "proof_verify_easy.md",
+        "literature_survey.md", "proof_search.md",
+        "proof_verify_direct.md", "proof_verify_easy.md",
         "proof_select.md", "verdict_proof.md", "proof_effort_summary.md",
     ]
     for pf in prompt_files:
@@ -101,6 +101,7 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
             proof_status_file="/tmp/test_status.md",
             previous_round_instructions="- This is the first round.",
             human_help_dir="/tmp/human_help",
+            prev_round_human_help_dir="",
             skill_file=os.path.join(skill_dir, "super_math_skill.md"),
             error_file="/tmp/test_output/verification/round_1/error_proof_search.md",
         )
@@ -108,20 +109,6 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
         check("No unresolved placeholders", "{problem_file}" not in prompt, "Found unresolved {problem_file}")
     except Exception as e:
         check("proof_search.md renders OK", False, str(e))
-
-    try:
-        prompt = load_prompt(
-            prompts_dir, "proof_verify.md",
-            problem_file="/tmp/test_problem.tex",
-            proof_file="/tmp/test_proof.md",
-            decomposition_file="/tmp/test_decomp.md",
-            output_file="/tmp/test_verify.md",
-            output_dir="/tmp/test_output",
-            error_file="/tmp/test_output/verification/round_1/error_proof_verify.md",
-        )
-        check("proof_verify.md renders OK", "test_problem.tex" in prompt)
-    except Exception as e:
-        check("proof_verify.md renders OK", False, str(e))
 
     try:
         prompt = load_prompt(
@@ -148,19 +135,6 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
         check("proof_verify_easy.md renders OK", "test_problem.tex" in prompt)
     except Exception as e:
         check("proof_verify_easy.md renders OK", False, str(e))
-
-    try:
-        prompt = load_prompt(
-            prompts_dir, "proof_decompose.md",
-            problem_file="/tmp/test_problem.tex",
-            proof_file="/tmp/test_proof.md",
-            output_file="/tmp/test_decomp.md",
-            output_dir="/tmp/test_output",
-            error_file="/tmp/test_output/verification/round_1/error_proof_decompose.md",
-        )
-        check("proof_decompose.md renders OK", "test_problem.tex" in prompt)
-    except Exception as e:
-        check("proof_decompose.md renders OK", False, str(e))
 
     try:
         prompt = load_prompt(
@@ -359,7 +333,6 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
     valid_providers = {"claude", "codex", "gemini"}
     auxiliary_agents = [
         ("literature_survey", "Literature Survey"),
-        ("proof_decompose", "Proof Decomposition"),
         ("proof_select", "Proof Selection"),
         ("proof_summary", "Proof Summary"),
     ]

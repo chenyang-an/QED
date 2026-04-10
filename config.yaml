@@ -8,7 +8,7 @@ pipeline:
   # Cost scales with number of providers: 2 providers = 2x proof search cost, 3 = 3x.
   multi_model:
     enabled: true               # true = use providers below, false = Claude-only
-    providers: ["codex"]        # any subset of ["claude", "codex", "gemini"]
+    providers: ["claude"]        # any subset of ["claude", "codex", "gemini"]
 
   # Multi-model verification.
   # When enabled, each proof is independently verified by all listed providers.
@@ -17,39 +17,29 @@ pipeline:
   # Cost scales linearly: 2 verifiers = 2x verification cost, 3 = 3x.
   verification_agents:
     enabled: true               # true = use providers below, false = Claude-only
-    providers: ["gemini"]       # any subset of ["claude", "codex", "gemini"]
-
-  # Decomposition agent configuration.
-  # Decomposition breaks proofs into fine-grained numbered "miniclaims" with
-  # dependency graphs, giving the verifier a pre-built checklist.
-  # When enabled=false, the verification agent reads the proof directly and
-  # identifies logical steps inline (saves one agent call per round).
-  # Easy problems never use decomposition regardless of this setting.
-  proof_decompose:
-    enabled: false              # true = run decomposition, false = skip it
-    provider: "codex"           # Model when enabled (claude/codex/gemini)
+    providers: ["claude"]       # any subset of ["claude", "codex", "gemini"]
 
   # Proof selection agent (only used when multi_model.enabled=true).
   # Picks the best proof when multiple models generate proofs in parallel.
   proof_select:
-    provider: "codex"           # Model for selection (claude/codex/gemini)
+    provider: "claude"           # Model for selection (claude/codex/gemini)
 
   # Literature survey agent (Stage 0).
   # Evaluates problem difficulty and surveys related work before proof search.
   literature_survey:
-    provider: "codex"           # Model for survey (claude/codex/gemini)
+    provider: "claude"           # Model for survey (claude/codex/gemini)
 
   # Proof effort summary agent (Stage 2).
   # Generates a summary of the entire proof journey after completion.
   proof_summary:
-    provider: "codex"           # Model for summary (claude/codex/gemini)
+    provider: "claude"           # Model for summary (claude/codex/gemini)
 
 claude:
   cli_path: "claude"
   permission_mode: "bypassPermissions"
 
   # Choose ONE provider: "subscription", "bedrock", or "api_key"
-  provider: "subscription"
+  provider: "bedrock"
 
   # --- Option 1: Claude subscription (Pro/Max) ---
   # No API key needed. Model is a shorthand: "opus", "sonnet", "haiku"
