@@ -377,8 +377,7 @@ def detect_resume_state(
     related_info_dir = os.path.join(output_dir, "related_info")
     survey_files = [
         "difficulty_evaluation.md",
-        "problem_analysis.md",
-        "related_theorems.md",
+        "related_work.md",
     ]
     skip_survey = all(
         _file_nonempty(os.path.join(related_info_dir, f)) for f in survey_files
@@ -1070,15 +1069,13 @@ async def run_literature_survey(
     )
     _fallback_save_response(response, [
         os.path.join(related_info_dir, "difficulty_evaluation.md"),
-        os.path.join(related_info_dir, "problem_analysis.md"),
-        os.path.join(related_info_dir, "related_theorems.md"),
+        os.path.join(related_info_dir, "related_work.md"),
     ], [os.path.join(related_info_dir, "error_literature_survey.md")],
         logger, step_name="Literature Survey")
 
     _check_expected_files([
         (os.path.join(related_info_dir, "difficulty_evaluation.md"), "difficulty evaluation"),
-        (os.path.join(related_info_dir, "problem_analysis.md"), "problem analysis"),
-        (os.path.join(related_info_dir, "related_theorems.md"), "related theorems"),
+        (os.path.join(related_info_dir, "related_work.md"), "related work"),
         (os.path.join(related_info_dir, "error_literature_survey.md"), "error log"),
     ], logger, "Literature Survey")
 

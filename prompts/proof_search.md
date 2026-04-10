@@ -373,10 +373,10 @@ Before this proof search began, an expert literature survey was conducted. The r
 ```
 
 This directory contains:
-- `problem_analysis.md` — problem classification, key objects, edge cases
-- `related_theorems.md` — applicable theorems, related results, useful lemmas, counterexamples
+- `difficulty_evaluation.md` — difficulty classification (Easy/Medium/Hard) with justification
+- `related_work.md` — related papers, applicable theorems, useful lemmas, counterexamples
 
-**Read these files before starting your proof.** They contain critical intelligence gathered from a literature survey — similar problems, applicable theorems, and known results that may inform your approach.
+**Read these files before starting your proof.** They contain critical intelligence gathered from a literature survey — related papers, applicable theorems, and known results that may inform your approach.
 
 ### Mathematical Strategy Guide
 

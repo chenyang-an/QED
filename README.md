@@ -64,12 +64,20 @@ All agents receive `skill/super_math_skill.md` as a system-level instruction —
 - **`<cite>...</cite>`** — Every external mathematical result (theorem, lemma, etc.) must be cited with a structured block containing: type, label, title, authors, source URL, verifier locator, exact statement, and usage. The verification agent independently checks each citation's faithfulness — fetching the source URL, verifying the statement matches, and confirming the result is correctly applied.
 - **`<key-original-step>...</key-original-step>`** — Every nontrivial, original step in the proof (novel reductions, hard estimates, key constructions) must be wrapped in this tag. The content inside must be maximally detailed with no hand-waving. The verification agent independently identifies which steps it considers nontrivial and flags mismatches: untagged hard steps (prover hiding difficulty) or inflated tags (prover tagging routine steps as key).
 
-**Verification phases.** Direct verification (`proof_verify_direct.md`) follows a 4-phase structure:
+**Verification phases.** Verification is split across two prompt files:
+
+`proof_verify_structural.md` (Phases 1–3):
 
 1. **Phase 1: Problem-Statement Integrity** — Word-by-word comparison of the original problem vs. what the proof claims to prove.
 2. **Phase 2: Citation Verification** — Checks every `<cite>` block for correct format, then independently verifies faithfulness (URL works, statement matches source, usage is correct). Models routinely hallucinate citations.
-3. **Phase 3: Logical Step Verification** — Fine-grained step-by-step verification with computational checks, plus `<key-original-step>` mismatch analysis.
-4. **Phase 4: Structural Completeness & Global Checks** — Chain completeness, problem-proof alignment, and coverage checks.
+3. **Phase 3: Subgoal Tree Structure** — Validates the proof's subgoal decomposition tree for completeness and well-formedness.
+
+`proof_verify_detailed.md` (Phase 4):
+
+4. **Phase 4a: Logical Step Verification** — Fine-grained step-by-step verification with computational checks.
+5. **Phase 4b: Subgoal Resolution** — Checks that every subgoal identified in Phase 3 is fully resolved.
+6. **Phase 4c: Key Original Step Analysis** — `<key-original-step>` mismatch analysis: untagged hard steps, inflated tags.
+7. **Phase 4d: Coverage** — Chain completeness, problem-proof alignment, and coverage checks.
 
 **Human guidance.** There are two levels of human guidance:
 
@@ -105,7 +113,8 @@ proof_agent/
 ├── prompts/
 │   ├── literature_survey.md           # Stage 0: literature survey agent prompt
 │   ├── proof_search.md               # Stage 1: proof search agent prompt
-│   ├── proof_verify_direct.md        # Stage 1: direct verification prompt (medium/hard)
+│   ├── proof_verify_structural.md    # Stage 1: structural verification prompt (Phases 1-3)
+│   ├── proof_verify_detailed.md      # Stage 1: detailed verification prompt (Phase 4)
 │   ├── proof_verify_easy.md          # Stage 1: lightweight verification prompt (easy)
 │   ├── proof_select.md              # Stage 1: selector agent prompt (multi-model only)
 │   ├── verdict_proof.md              # Stage 1: verdict agent prompt
@@ -128,10 +137,11 @@ Each prompt file in `prompts/` is a Markdown template with `{placeholder}` varia
 | Prompt | Placeholders |
 |--------|-------------|
 | `literature_survey.md` | `problem_file`, `related_info_dir`, `output_dir`, `error_file` |
-| `proof_search.md` | `problem_file`, `proof_file`, `output_dir`, `related_info_dir`, `round_num`, `proof_status_file`, `previous_round_instructions`, `human_help_dir`, `prev_round_human_help_dir`, `skill_file`, `error_file` |
-| `proof_verify_direct.md` | `problem_file`, `proof_file`, `output_file`, `output_dir`, `error_file` |
+| `proof_search.md` | `problem_file`, `proof_file`, `output_dir`, `related_info_dir`, `round_num`, `proof_status_file`, `previous_round_instructions`, `human_help_dir`, `prev_round_human_help_dir`, `skill_file`, `scratch_pad_file`, `error_file` |
+| `proof_verify_structural.md` | `problem_file`, `proof_file`, `output_file`, `output_dir`, `error_file` |
+| `proof_verify_detailed.md` | `problem_file`, `proof_file`, `structural_report_file`, `output_file`, `output_dir`, `error_file` |
 | `proof_verify_easy.md` | `problem_file`, `proof_file`, `output_file`, `output_dir`, `error_file` |
-| `proof_select.md` | `problem_file`, `verify_claude`, `verify_codex`, `verify_gemini`, `proof_claude`, `proof_codex`, `proof_gemini`, `selection_file`, `error_file` |
+| `proof_select.md` | `problem_file`, `verification_reports_block`, `proof_claude`, `proof_codex`, `proof_gemini`, `selection_file`, `error_file` |
 | `verdict_proof.md` | `verification_result_file` |
 | `proof_effort_summary.md` | `output_dir`, `outcome`, `total_rounds`, `max_rounds`, `summary_file`, `error_file` |
 
@@ -154,8 +164,7 @@ Given an output directory `<output>/`, a complete run produces:
 │
 ├── related_info/                      # Stage 0: literature survey output
 │   ├── difficulty_evaluation.md       #   Difficulty classification (Easy/Medium/Hard)
-│   ├── problem_analysis.md            #   Problem classification, key objects, edge cases
-│   ├── related_theorems.md            #   Applicable theorems, lemmas, counterexamples
+│   ├── related_work.md                #   Problem classification, applicable theorems, related results
 │   └── error_literature_survey.md     #   Error log (empty if no errors)
 │
 ├── literature_survey_log/             # Stage 0: agent logs
@@ -170,7 +179,13 @@ Given an output directory `<output>/`, a complete run produces:
 │   ├── round_1/
 │   │   ├── proof_before_round.md      #   Backup of proof.md before this round
 │   │   ├── proof_status.md            #   Proof search agent's log of what it tried
-│   │   ├── verification_result.md     #   Verification verdict
+│   │   ├── scratch_pad.md             #   Proof search agent's scratch work
+│   │   ├── verification_result.md     #   Verification verdict (easy mode)
+│   │   ├── verification_file/         #   Verification outputs (non-easy mode)
+│   │   │   ├── structural/
+│   │   │   │   └── verification_result.md   #   Structural verification (Phases 1-3)
+│   │   │   └── detailed/
+│   │   │       └── verification_result.md   #   Detailed verification (Phase 4)
 │   │   ├── error_proof_search.md      #   Error log for proof search (empty if no errors)
 │   │   ├── error_proof_verify*.md     #   Error log for verification (suffix matches verify variant used)
 │   │   └── human_help/
@@ -435,9 +450,9 @@ python code/smoke_test.py
 ```
 
 It checks:
-1. All 7 prompt files exist
+1. All 8 prompt files exist
 2. All skill files exist
-3. All 7 prompt templates render without errors (every `{placeholder}` has a matching value)
+3. All 8 prompt templates render without errors (every `{placeholder}` has a matching value)
 4. Skill file loads correctly
 5. Claude CLI is installed and responds correctly (via `claude -p` subprocess, matching how the pipeline calls it)
 6. Config file has required fields (`max_proof_iterations`, `claude`)
@@ -557,7 +572,7 @@ This pipeline runs Claude CLI with `--dangerously-skip-permissions`. This means 
                   |  Agent (Claude CLI)     |   (classifies difficulty,
                   +------------------------+    surveys related work)
                                |
-                     related_info/ (3 files)
+                     related_info/ (2 files)
                                |
               +----------------+----------------+
               |                                 |
@@ -595,7 +610,7 @@ This pipeline runs Claude CLI with `--dangerously-skip-permissions`. This means 
 ```mermaid
 flowchart TD
     A["problem.tex"] --> B["Literature Survey Agent<br/>Stage 0"]
-    B --> C["related_info/ (3 files)"]
+    B --> C["related_info/ (2 files)"]
     C --> D{"Multi-model?"}
 
     D -->|No| I["Proof Search"]

@@ -64,8 +64,7 @@ Read every relevant file in this directory and its subdirectories. Key files inc
 | `problem.tex` | The original problem statement |
 | `proof.md` | The final proof (or best attempt) |
 | `related_info/difficulty_evaluation.md` | Difficulty classification (Easy/Medium/Hard) and justification |
-| `related_info/problem_analysis.md` | Problem classification and key objects |
-| `related_info/related_theorems.md` | Applicable theorems and related results |
+| `related_info/related_work.md` | Related papers, applicable theorems, and known results |
 | `verification/round_*/proof_status.md` | What each round tried and learned |
 | `verification/round_*/verification_result.md` | Verification verdict for each round |
 | `TOKEN_USAGE.md` | Token usage across all agent calls |
