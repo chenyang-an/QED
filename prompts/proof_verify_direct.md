@@ -12,7 +12,7 @@ You must be absolutely strict. If you are uncertain if the proof proved certain 
 
 ## Verification Method
 
-### Step 1: Problem-Statement Integrity
+### Phase 1: Problem-Statement Integrity
 
 **This is the most critical check and must be done FIRST, before anything else.**
 
@@ -30,9 +30,9 @@ The proof search agent may — intentionally or accidentally — alter, weaken, 
    - Proving a special case instead of the general statement
 4. If the proof does not state the problem it is proving, that itself is a FAIL — the proof must clearly declare what it proves so the reader can verify alignment.
 
-**If the problem the proof claims to solve differs from `{problem_file}` in ANY mathematically meaningful way, this check is FAIL — regardless of whether the proof of the altered statement is correct. Stop here and record the failure.**
+**If the problem the proof claims to solve differs from `{problem_file}` in ANY mathematically meaningful way, this check is FAIL — regardless of whether the proof of the altered statement is correct. Record the failure and continue to the remaining phases.**
 
-### Step 2: Citation Format and Faithfulness Verification
+### Phase 2: Citation Format and Faithfulness Verification
 
 **This step is critical. Language models routinely hallucinate citations — inventing theorem numbers, attributing results to wrong sources, fabricating URLs, or citing statements that do not appear in the referenced source. You must catch every instance of this.**
 
@@ -79,21 +79,30 @@ Flag any citation with missing or malformed fields as FAIL.
 
 **If a key proof step depends on a citation that is FAIL or UNABLE_TO_VERIFY, that proof step itself becomes FAIL or UNCERTAIN.**
 
-### Step 3: Logical Step Verification
+### Phase 3: Logical Step Verification
 
-Read the proof end-to-end. Identify every key logical assertion (claim) in the proof — each claim should be a single, precise mathematical statement that the proof makes or relies on. Be maximally fine-grained: split complex reasoning into individual claims. For each claim:
+Read the proof end-to-end. Identify every key logical assertion (step) in the proof — each step should be a single, precise mathematical statement that the proof makes or relies on. Be maximally fine-grained: split complex reasoning into individual steps. For each step:
 
-1. **State the claim** — Write the precise mathematical assertion.
-2. **Quote the justification** — Quote the relevant passage from the proof that justifies this claim.
-3. **List dependencies** — Which earlier claims does this claim depend on? If this claim depends on a citation, reference the citation by its label.
-4. **Check logical validity** — Does the claim follow from its dependencies and the stated justification? Is the reasoning correct?
-5. **Check mathematical correctness** — Are computations, cited theorems, and applied results correct? Are all conditions for cited results satisfied? **Cross-reference with citation verdicts from Step 2** — if a claim relies on a citation that was marked FAIL, this claim is also FAIL.
-6. **Check completeness** — Is the justification sufficient, or is there a gap? Does "clearly" or "obviously" hide a non-trivial claim?
-7. **Computational check** — Whenever feasible, verify the claim with code (SymPy, NumPy, Z3, etc.). Save scripts in `{output_dir}/tmp/`. Note the result (confirmed / contradicted / not checked).
+1. **State the step** — Write the precise mathematical assertion.
+2. **Quote the justification** — Quote the relevant passage from the proof that justifies this step.
+3. **List dependencies** — Which earlier steps does this step depend on? If this step depends on a citation, reference the citation by its label.
+4. **Check logical validity** — Does the step follow from its dependencies and the stated justification? Is the reasoning correct?
+5. **Check mathematical correctness** — Are computations, cited theorems, and applied results correct? Are all conditions for cited results satisfied? **Cross-reference with citation verdicts from Phase 2** — if a step relies on a citation that was marked FAIL, this step is also FAIL.
+6. **Check completeness** — Is the justification sufficient, or is there a gap? Does "clearly" or "obviously" hide a non-trivial step?
+7. **Computational check** — Whenever feasible, verify the step with code (SymPy, NumPy, Z3, etc.). Save scripts in `{output_dir}/tmp/`. Note the result (confirmed / contradicted / not checked).
 8. **Assign a verdict** — PASS, FAIL, or UNCERTAIN (if you cannot determine correctness but suspect a gap).
 9. **If FAIL or UNCERTAIN** — State precisely what is wrong or what is missing.
 
-### Step 4: Structural Completeness and Global Checks
+After verifying all steps, check the proof's `<key-original-step>` tags:
+
+1. **List all steps the prover tagged as `<key-original-step>`.** These are the steps the prover claims are the original, nontrivial core of the proof.
+2. **Independently identify which steps YOU consider nontrivial and original** — the steps where the real difficulty of the problem is resolved, not routine setup or cited results.
+3. **Compare the two lists.** Flag any mismatches:
+   - **Untagged nontrivial step** — You identified a step as nontrivial but the prover did not tag it. This suggests the prover may be hiding a weak or hand-waved argument from scrutiny.
+   - **Inflated tag** — The prover tagged a routine step as key-original. This dilutes the signal and may indicate the prover is avoiding the real hard parts.
+4. **Check that tagged steps are maximally detailed.** Inside every `<key-original-step>`, there must be no "clearly," "obviously," or hand-waving. The prover committed to these being the hard parts — verify the justification matches that commitment.
+
+### Phase 4: Structural Completeness and Global Checks
 
 #### 4a. Structural Completeness
 
@@ -141,7 +150,7 @@ Printing large expressions to stdout wastes your context window. Write large res
 
 ## Critical Instructions
 
-- **Follow the four steps in order.** Do not skip ahead. If Step 1 fails, record the failure and continue with the remaining steps anyway (the proof may have other issues too).
+- **Follow the four phases in order.** Do not skip ahead. If Phase 1 fails, record the failure and continue with the remaining phases anyway (the proof may have other issues too).
 - Be thorough and skeptical. Your job is to find errors, not to approve proofs.
 - If a hard problem is "easily" proved, be especially suspicious.
 - Check that proof by contradiction actually uses the negated assumption.
@@ -188,7 +197,7 @@ Write ALL verification results to:
 
 ---
 
-## Step 1: Problem-Statement Integrity
+## Phase 1: Problem-Statement Integrity
 
 **Status:** [PASS/FAIL]
 **Original problem (from {problem_file}):** [quote verbatim]
@@ -197,7 +206,7 @@ Write ALL verification results to:
 
 ---
 
-## Step 2: Citation Verification
+## Phase 2: Citation Verification
 
 **Citations found:** [N total]
 
@@ -224,41 +233,56 @@ Write ALL verification results to:
 **Citations failed:** Y / N
 **Citations unverifiable:** Z / N
 
-**Step 2 overall:** [PASS / FAIL]
+**Phase 2 overall:** [PASS / FAIL]
 
 ---
 
-## Step 3: Logical Step Verification
+## Phase 3: Logical Step Verification
 
-### Claim 1
+### Step 1
 **Assertion:** [precise mathematical claim]
 **Justification in proof:** "[quote from proof]"
-**Dependencies:** [list earlier claim numbers or citation labels, or "None (hypothesis)"]
+**Dependencies:** [list earlier step numbers or citation labels, or "None (hypothesis)"]
 **Verdict:** [PASS / FAIL / UNCERTAIN]
-**Analysis:** [why this claim is correct/incorrect/unclear]
+**Analysis:** [why this step is correct/incorrect/unclear]
 **Computational check:** [confirmed / contradicted / not checked — describe what was tested]
 
-### Claim 2
+### Step 2
 ...
 
-[Continue for ALL identified claims. Do not skip or combine claims.]
+[Continue for ALL identified steps. Do not skip or combine steps.]
 
 ---
 
-### Claim Verification Summary
+### Step Verification Summary
 
-| # | Claim (short description) | Verdict | Computational |
-|---|---------------------------|---------|---------------|
+| # | Step (short description) | Verdict | Computational |
+|---|--------------------------|---------|---------------|
 | 1 | [brief description] | PASS/FAIL/UNCERTAIN | [confirmed/contradicted/not checked] |
 | ... | ... | ... | ... |
 
-**Claims passed:** X / N
-**Claims failed:** Y / N
-**Claims uncertain:** Z / N
+**Steps passed:** X / N
+**Steps failed:** Y / N
+**Steps uncertain:** Z / N
+
+### Key Original Step Analysis
+
+**Prover-tagged key steps:** [list step numbers the prover wrapped in `<key-original-step>`]
+**Verifier-identified nontrivial steps:** [list step numbers YOU consider nontrivial and original]
+
+| Mismatch type | Step # | Details |
+|---------------|--------|---------|
+| Untagged nontrivial | [#] | [prover did not tag this step but it is nontrivial — explain why] |
+| Inflated tag | [#] | [prover tagged this step but it is routine — explain why] |
+| ... | ... | ... |
+
+**Hand-waving inside tagged steps:** [list any tagged key steps that are handwavy, not explicit, sketchy]
+
+**Key Original Step Analysis:** [PASS / FAIL — FAIL if any untagged nontrivial steps, inflated tags, or hand-waving inside tagged steps]
 
 ---
 
-## Step 4: Structural Completeness and Global Checks
+## Phase 4: Structural Completeness and Global Checks
 
 ### Structural Completeness
 **Chain complete:** [YES / NO — is there an unbroken dependency path from hypotheses to conclusion?]
@@ -279,10 +303,11 @@ Write ALL verification results to:
 
 | Check | Status |
 |-------|--------|
-| Step 1: Problem-Statement Integrity | [PASS/FAIL] |
-| Step 2: Citation Verification | [PASS/FAIL] |
-| Step 3: All Claims Verified | [PASS/FAIL — FAIL if any claim is FAIL or UNCERTAIN] |
-| Step 4: Structural Completeness & Global Checks | [PASS/FAIL] |
+| Phase 1: Problem-Statement Integrity | [PASS/FAIL] |
+| Phase 2: Citation Verification | [PASS/FAIL] |
+| Phase 3: All Steps Verified | [PASS/FAIL — FAIL if any step is FAIL or UNCERTAIN] |
+| Phase 3: Key Original Step Analysis | [PASS/FAIL] |
+| Phase 4: Structural Completeness & Global Checks | [PASS/FAIL] |
 
 ### Overall Verdict: [PASS/FAIL]
 

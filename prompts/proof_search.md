@@ -204,6 +204,40 @@ If multiple external results are used, create separate citation blocks.
 
 The proof should focus on the genuinely problem-specific and nontrivial parts of the argument. Standard background results should be cited using the required `<cite>...</cite>` format rather than reproved. However, every new reduction, delicate step, or nonstandard argument must still be proved fully and explicitly.
 
+## CRITICAL: Mark Key Original Steps
+
+Every proof has steps that are original, nontrivial, and problem-specific — the steps where the real intellectual work happens. These are distinct from routine steps (setting up notation, applying standard definitions) and cited results (covered by `<cite>` tags).
+
+**You must wrap every such step with `<key-original-step>` tags:**
+
+```
+<key-original-step>
+[The complete, detailed argument for this nontrivial original step]
+</key-original-step>
+```
+
+### What qualifies as a key original step
+
+- A novel reduction or transformation specific to this problem
+- A nontrivial estimate, bound, or inequality that requires real work
+- A construction (of an object, counterexample, auxiliary function) designed for this proof
+- An argument that combines known results in a non-obvious way
+- Any step where the core difficulty of the problem is actually resolved
+
+### What does NOT qualify
+
+- Setting up notation or restating definitions
+- Routine applications of standard techniques (e.g., triangle inequality, linearity)
+- Steps that are fully justified by a `<cite>` tag
+- Trivial case checks or bookkeeping steps
+
+### Rules
+
+- Every proof of a nontrivial problem must have at least one `<key-original-step>`.
+- The content inside the tags must be **maximally detailed** — this is where you must show every sub-step, every bound, every case. No hand-waving allowed inside a `<key-original-step>`.
+- Do not inflate: tagging a routine step as key-original does not make it so. The verification agent will independently assess which steps are nontrivial.
+- Do not hide: if a step is nontrivial but you do not tag it, the verification agent will flag the mismatch.
+
 ---
 
 ## HERE ARE THE INPUT FILE PATHS:
