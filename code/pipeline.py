@@ -1674,10 +1674,9 @@ async def run_proof_loop(
     proof_file = os.path.join(output_dir, "proof.md")
     verify_dir = os.path.join(output_dir, "verification")
 
-    # Resolve human_help_dir
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_base = os.path.dirname(script_dir)
-    human_help_dir = os.path.join(project_base, "human_help")
+    # Resolve human_help_dir — read from output directory so proof_output
+    # is fully self-contained (run.sh copies the global files there).
+    human_help_dir = os.path.join(output_dir, "human_help")
 
     logger = PipelineLogger(verify_dir, "Proof Search")
 

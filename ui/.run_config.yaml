@@ -1,0 +1,42 @@
+pipeline:
+  max_proof_iterations: 9
+  multi_model:
+    enabled: true
+    providers:
+    - claude
+  verification_agents:
+    enabled: true
+    providers:
+    - claude
+  proof_select:
+    provider: claude
+  brainstorm:
+    enabled: false
+    providers:
+    - claude
+  literature_survey:
+    provider: claude
+  proof_summary:
+    provider: claude
+claude:
+  cli_path: claude
+  permission_mode: bypassPermissions
+  provider: bedrock
+  subscription:
+    model: opus
+  bedrock:
+    model: us.anthropic.claude-opus-4-6-v1[1m]
+    aws_profile: default
+  api_key:
+    model: claude-opus-4-6
+    key: ''
+codex:
+  cli_path: codex
+  model: gpt-5.4
+  reasoning_effort: xhigh
+gemini:
+  cli_path: gemini
+  model: gemini-3.1-pro-preview
+  approval_mode: yolo
+  thinking_level: HIGH
+  api_key: ''

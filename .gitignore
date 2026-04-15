@@ -308,3 +308,8 @@ TSWLatexianTemp*
 
 _pycache__/
 *.pyc
+
+# Streamlit UI runtime data
+ui/proof_runs/
+.config_smoke_tmp.yaml
+.config_run_active.yaml
