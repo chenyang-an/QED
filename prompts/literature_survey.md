@@ -40,12 +40,20 @@ Write to `{related_info_dir}/difficulty_evaluation.md`:
 
 ### Step 2: Related Work Collection
 
-This is the main task. **Be thorough.** Search broadly and deeply for every paper, theorem, and result that could be relevant to the problem. Use web search extensively — ArXiv, Google Scholar, MathSciNet, Math StackExchange, MathOverflow, Wikipedia, textbook references.
+This is the main task. **Be thorough.** Search broadly and deeply for every paper, theorem, and result that could be relevant to the problem. You should: 
+
+Study existing work related to the problem.
+Find similar questions and known solutions.
+Extract useful tools, techniques, and insights related to this problem. 
+
+Use web search extensively — ArXiv, Google Scholar, MathSciNet, Math StackExchange, MathOverflow, Wikipedia, textbook references.
 
 The depth of this step depends on your difficulty evaluation:
 - **Easy:** Brief survey — list the 1-3 directly applicable theorems with precise statements. Skip the deep paper search.
 - **Medium:** Moderate survey — cover key theorems and do a targeted paper search.
 - **Hard:** Full survey — exhaustive search. Leave no stone unturned. The proof agent will need every advantage.
+
+
 
 Write all findings to `{related_info_dir}/related_work.md` using this format:
 

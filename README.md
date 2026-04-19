@@ -1,8 +1,6 @@
 # QED
 
-**Author:** Chenyang An (<cya.portfolio@gmail.com>)
-
-**Co-author:** Qihao Ye (<q8ye@ucsd.edu>)
+**Authors:** Chenyang An (<cya.portfolio@gmail.com>) Qihao Ye (<q8ye@ucsd.edu>) Minghao Pan (mpan2@caltech.edu)
 
 QED is a multi-agent pipeline that takes a mathematical problem statement in LaTeX and produces a rigorous natural-language proof. The pipeline orchestrates Claude (and optionally Codex and Gemini) through their respective CLIs via bash subprocesses — no agent framework is used. Both proof search and verification can use any configurable subset of models (Claude, Codex, Gemini) running in parallel. It performs stronger than chatbot versions of various models on math proving tasks, since it uses agentic loops to search and verify math proofs instead of answering in one shot.
 
