@@ -6,17 +6,17 @@ prover:
 # --- Decomposition Prover Settings ---
 # Only used when prover.mode = "decomposition"
 decomposition:
-  max_prover_rounds: 5     # rounds per step before asking regulator
-  max_revisions: 5         # local revisions per decomposition step
+  max_prover_rounds: 2     # rounds per step before asking regulator
+  max_revisions: 2         # local revisions per decomposition step
   max_decompositions: 2     # complete decomposition rewrites allowed
 
   # Model selection for each agent (claude, codex, or gemini)
   models:
-    decomposer: "claude"       # creates/revises proof decomposition
-    step_prover: "claude"      # proves individual steps
-    step_verifier: "claude"    # verifies step proofs
-    regulator: "claude"        # decides revise/rewrite/continue
-    proof_aggregator: "claude" # combines steps into final proof
+    decomposer: "codex"       # creates/revises proof decomposition
+    step_prover: "codex"      # proves individual steps
+    step_verifier: "gemini"    # verifies step proofs
+    regulator: "codex"        # decides revise/rewrite/continue
+    proof_aggregator: "codex" # combines steps into final proof
 
 pipeline:
   max_proof_iterations: 9
@@ -54,19 +54,19 @@ pipeline:
   # Literature survey agent (Stage 0).
   # Evaluates problem difficulty and surveys related work before proof search.
   literature_survey:
-    provider: "claude"           # Model for survey (claude/codex/gemini)
+    provider: "codex"           # Model for survey (claude/codex/gemini)
 
   # Proof effort summary agent (Stage 2).
   # Generates a summary of the entire proof journey after completion.
   proof_summary:
-    provider: "claude"           # Model for summary (claude/codex/gemini)
+    provider: "codex"           # Model for summary (claude/codex/gemini)
 
 claude:
   cli_path: "claude"
   permission_mode: "bypassPermissions"
 
   # Choose ONE provider: "subscription", "bedrock", or "api_key"
-  provider: "bedrock"
+  provider: "subscription"
 
   # --- Option 1: Claude subscription (Pro/Max) ---
   # No API key needed. Model is a shorthand: "opus", "sonnet", "haiku"
