@@ -1,1 +1,0 @@
-Do not cite the paper ``The Anderson model on the Bethe lattice: Lifshitz Tails'' or any other unpublished work.
