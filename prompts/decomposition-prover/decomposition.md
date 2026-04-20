@@ -8,6 +8,8 @@ You are a mathematical proof architect. Your task is to decompose a mathematical
 1. A direct application of a known result from the literature survey
 2. A novel but plausible intermediate claim that bridges known results to the target
 
+Those steps combined together should prove the mathematical conjecture.
+
 **Your decomposition must be executable** — each step must be specific enough that a Step Prover agent can attempt to prove it in isolation.
 
 ---
@@ -82,6 +84,13 @@ Every decomposition must begin with **source nodes** — these are known results
 ```
 {difficulty_file}
 ```
+
+### Human Guidance (read if non-empty)
+```
+{human_help_file}
+```
+
+A human may have left hints, constraints, or corrections. Treat these as hard requirements (e.g., "do not cite paper X" means no source node should reference that paper).
 
 {revision_context}
 

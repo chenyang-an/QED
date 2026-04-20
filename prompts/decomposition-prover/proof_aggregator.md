@@ -31,8 +31,8 @@ This contains the proof workflow with:
 {step_proofs_dir}
 ```
 
-Contains individual step proof files:
-- `step_{STEP_ID}_proof.md` for each step
+Contains individual step proof files in subdirectories:
+- `step_{STEP_ID}/proof.md` for each step
 
 ### Problem Statement
 ```
@@ -188,7 +188,7 @@ justification: Combined with SG1, this yields the main result.
 
 ### Step 1: [STEP1 description]
 
-[Content from step_STEP1_proof.md, edited for flow]
+[Content from step_STEP1/proof.md, edited for flow]
 
 <subgoal-resolved id="SG1" by="proved above" />
 
@@ -196,7 +196,7 @@ justification: Combined with SG1, this yields the main result.
 
 Using the result of Step 1, we now establish [STEP2 statement].
 
-[Content from step_STEP2_proof.md, edited for flow]
+[Content from step_STEP2/proof.md, edited for flow]
 
 <subgoal-resolved id="SG2" by="proved above" />
 

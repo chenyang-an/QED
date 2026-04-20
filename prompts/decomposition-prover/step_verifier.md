@@ -59,17 +59,32 @@ For each input statement used:
 - Is it applied correctly (hypotheses satisfied)?
 - Is the usage justified?
 
-### 4. Use Computational Verification
+### 4. Citation Verification
+
+If the proof uses any `<cite>...</cite>` blocks or references external results:
+
+1. **Check the source URL** — Does it actually work and point to the claimed source?
+2. **Check title and authors** — Do they match?
+3. **Locate the exact statement** — Using the `verifier_locator`, find the cited result
+4. **Compare the statement** — Does the `statement` field match word-by-word with what the source actually says? Models frequently hallucinate citations — inventing theorem numbers, fabricating URLs, misquoting results.
+5. **Check usage correctness** — Are the hypotheses of the cited result actually satisfied in this context?
+
+**A step proof that relies on a hallucinated or incorrectly stated citation is FAIL**, regardless of how correct the rest of the logic is.
+
+### 5. Use Computational Verification
 
 You have access to a shell. Use it to:
 - Verify algebraic manipulations with SymPy
 - Check claimed identities
 - Test edge cases that might break the proof
 - Verify any numerical claims
+- Fetch cited URLs to verify they exist and contain the claimed results
 
 Save scripts in `{output_dir}/tmp/`.
 
-### 5. Provide Actionable Feedback
+**If a computation takes longer than 3 minutes, stop it and skip.**
+
+### 6. Provide Actionable Feedback
 
 If the proof fails, your feedback must be:
 - **Specific**: Point to exact lines/claims that are wrong
@@ -155,13 +170,20 @@ Use this format:
 
 ## Citation Verification
 
-[If any citations are used]
+**Citations found**: [N total, or "None — no citations in this step"]
+
+[If any citations are used, verify each one:]
 
 ### Citation: {label}
-**Source accessible**: [YES / NO]
-**Statement matches**: [YES / NO / UNABLE TO VERIFY]
-**Application correct**: [YES / NO]
+**URL checked**: [Works / Broken / Wrong source]
+**Title & authors match**: [YES / NO]
+**Statement located via verifier_locator**: [YES / NO / Source inaccessible]
+**Statement matches source**: [EXACT / DIFFERS — explain / NOT FOUND]
+**Hypotheses satisfied in context**: [YES / NO — explain]
+**Verdict**: [PASS / FAIL / UNABLE_TO_VERIFY]
 **Issues**: [Any issues, or "None"]
+
+[Continue for ALL citations]
 
 ---
 

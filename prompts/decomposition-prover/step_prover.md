@@ -66,6 +66,13 @@ You have access to a shell. Use it to:
 
 Save scripts and output in `{output_dir}/tmp/`.
 
+### 6. Check for Human Guidance
+
+Read the following file if it exists and is non-empty:
+- **Global prover guidance:** `{human_help_file}`
+
+A human may have left hints, suggestions, corrections, or constraints about the problem or proof approaches. This input can be extremely valuable — treat human guidance as hard requirements (e.g., if they say "do not cite paper X", you must comply).
+
 ---
 
 ## Round Information
@@ -106,6 +113,8 @@ This file contains the statements of all inputs. You may assume these are TRUE.
 ```
 {related_work_file}
 ```
+
+{proved_steps_context}
 
 ---
 
@@ -177,6 +186,7 @@ Use this format:
    - Weakening what you're trying to prove first
 3. Use computational exploration to build intuition
 4. Check if any input statements give more than you initially realized
+5. **Consult the proofs of previously proved steps** — they may reveal constructions, auxiliary properties, or techniques that are relevant to your current step but not explicitly stated in the input declarations
 
 ### If You're Truly Stuck
 1. Document what you've tried
