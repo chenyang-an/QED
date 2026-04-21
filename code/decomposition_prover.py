@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Decomposition-based prover for the QED pipeline.
 
-This module implements a sophisticated proof workflow that:
-1. Decomposes a problem into intermediate steps
-2. Proves each step individually (key steps first)
-3. Verifies each step proof
-4. Uses a regulator to decide when to revise or rewrite the decomposition
-5. Aggregates all step proofs into a final proof.md
+This module implements a structured proof workflow that:
+1. Decomposes a problem into a proof plan (intermediate steps)
+2. Single prover writes a complete proof following the plan
+3. Structural verification (Phases 1-5): problem integrity, completeness, citations, subgoal tree
+4. Detailed verification (Phase 6): step-by-step logical analysis
+5. Regulator decides next action on failure: REVISE_PROOF, REVISE_PLAN, or REWRITE
+
+Pipeline flow:
+    Decomposer → Single Prover → Structural Verifier → Detailed Verifier
+         ↑                                                    ↓
+         └──────────────────── Regulator ←────────────────────┘
 
 This is an optional alternative to the "simple" prover mode in pipeline.py.
 """
@@ -27,17 +32,18 @@ from model_runner import run_model, run_claude_agent, ModelRunnerError
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONFIG = {
-    "max_prover_rounds": 5,      # rounds per step before asking regulator
-    "max_revisions": 3,          # local revisions per step
-    "max_decompositions": 3,     # complete rewrites allowed
+    "max_proof_attempts": 3,     # REVISE_PROOF limit: proof attempts per revision
+    "max_revisions": 2,          # REVISE_PLAN limit: plan revisions per attempt
+    "max_decompositions": 3,     # REWRITE limit: total decomposition attempts
 }
 
 DEFAULT_MODELS = {
     "decomposer": "claude",
-    "step_prover": "claude",
-    "step_verifier": "claude",
+    "single_prover": "claude",
     "regulator": "claude",
-    "proof_aggregator": "claude",
+    "structural_verifier": "claude",
+    "detailed_verifier": "claude",
+    "verdict": "claude",
 }
 
 
@@ -91,7 +97,12 @@ def parse_decomposition(yaml_content: str) -> dict:
 
 
 def parse_verdict(response: str) -> str:
-    """Extract PASS or FAIL from verifier response."""
+    """Extract PASS or FAIL from verifier response.
+
+    NOTE: This function is currently unused. The main orchestration loop uses
+    run_verdict() instead, which returns DONE/CONTINUE. Kept for potential
+    future use or alternative parsing needs.
+    """
     response_upper = response.upper()
     # Look for verdict in markdown header
     if "### VERDICT: PASS" in response_upper or "**VERDICT**: PASS" in response_upper:
@@ -128,10 +139,7 @@ class DecompositionLogger:
             "state": "STARTING",
             "attempt": 1,
             "revision": 1,
-            "current_step": None,
-            "current_round": 0,
-            "steps_proved": [],
-            "steps_failed": [],
+            "proof": 1,
             "last_update": datetime.now().isoformat(),
         })
 
@@ -149,16 +157,9 @@ class DecompositionLogger:
 | Field | Value |
 |-------|-------|
 | State | {status.get('state', 'UNKNOWN')} |
-| Decomposition Attempt | {status.get('attempt', 1)} |
-| Revision | {status.get('revision', 0)} |
-| Current Step | {status.get('current_step', 'None')} |
-| Current Round | {status.get('current_round', 0)} |
-
-## Progress
-
-**Steps Proved:** {', '.join(status.get('steps_proved', [])) or 'None'}
-
-**Steps Failed:** {', '.join(status.get('steps_failed', [])) or 'None'}
+| Attempt | {status.get('attempt', 1)} |
+| Revision | {status.get('revision', 1)} |
+| Proof | {status.get('proof', 1)} |
 
 ## Recent Activity
 
@@ -171,10 +172,7 @@ class DecompositionLogger:
         state: str = None,
         attempt: int = None,
         revision: int = None,
-        current_step: str = None,
-        current_round: int = None,
-        steps_proved: list = None,
-        steps_failed: list = None,
+        proof: int = None,
         recent_activity: str = None,
     ) -> None:
         """Update the status file with current state."""
@@ -186,10 +184,7 @@ class DecompositionLogger:
                 "state": "UNKNOWN",
                 "attempt": 1,
                 "revision": 1,
-                "current_step": None,
-                "current_round": 0,
-                "steps_proved": [],
-                "steps_failed": [],
+                "proof": 1,
                 "recent_activity": "",
             }
 
@@ -200,14 +195,8 @@ class DecompositionLogger:
             existing["attempt"] = attempt
         if revision is not None:
             existing["revision"] = revision
-        if current_step is not None:
-            existing["current_step"] = current_step
-        if current_round is not None:
-            existing["current_round"] = current_round
-        if steps_proved is not None:
-            existing["steps_proved"] = steps_proved
-        if steps_failed is not None:
-            existing["steps_failed"] = steps_failed
+        if proof is not None:
+            existing["proof"] = proof
         if recent_activity is not None:
             existing["recent_activity"] = recent_activity
 
@@ -268,15 +257,22 @@ class DecompositionLogger:
 
 
 def parse_regulator_decision(response: str) -> str:
-    """Extract decision from regulator response."""
+    """Extract decision from regulator response.
+
+    Returns one of: REVISE_PROOF, REVISE_PLAN, REWRITE
+    """
     response_upper = response.upper()
-    for decision in ["REVISE", "REWRITE"]:
+    # Check for new 3-option decisions first
+    for decision in ["REVISE_PROOF", "REVISE_PLAN", "REWRITE"]:
         if f"DECISION: {decision}" in response_upper:
             return decision
         if f"## DECISION: {decision}" in response_upper:
             return decision
-    # Default to REVISE if unclear (prefer local fix over full rewrite)
-    return "REVISE"
+    # Legacy support: map old REVISE to REVISE_PROOF
+    if "DECISION: REVISE" in response_upper or "## DECISION: REVISE" in response_upper:
+        return "REVISE_PROOF"
+    # Default to REVISE_PROOF if unclear (cheapest retry option)
+    return "REVISE_PROOF"
 
 
 # ---------------------------------------------------------------------------
@@ -284,122 +280,113 @@ def parse_regulator_decision(response: str) -> str:
 # ---------------------------------------------------------------------------
 
 class DecompositionState:
-    """Tracks the state of a decomposition-based proof attempt."""
+    """Tracks the state of a decomposition-based proof attempt.
+
+    Three-level hierarchy:
+    - attempt: Complete decomposition strategy (REWRITE creates new attempt)
+    - revision: Version of the decomposition within an attempt (REVISE_PLAN creates new revision)
+    - proof: Proof attempt for a given decomposition (REVISE_PROOF creates new proof)
+
+    Directory structure:
+        attempt_1/
+          revision_1/
+            decomposition.yaml
+            proof_1/
+              proof.md, verification reports, regulator_decision.md
+            proof_2/
+              ...
+          revision_2/
+            decomposition.yaml  (revised plan)
+            proof_1/
+              ...
+        attempt_2/  (new strategy)
+          ...
+    """
 
     def __init__(self, output_dir: str):
         self.output_dir = output_dir
         self.decomp_dir = os.path.join(output_dir, "decomposition")
         self.attempt = 1
         self.revision = 1
+        self.proof = 1
         self.decomposition = None
-        self.step_proofs = {}  # step_id -> proof content
-        self.step_results = {}  # step_id -> "proved" | "failed"
         self.attempt_history = []  # list of failure info for rewrites
 
     def get_attempt_dir(self) -> str:
-        """Get directory for current attempt."""
+        """Get directory for current decomposition attempt."""
         return os.path.join(self.decomp_dir, f"attempt_{self.attempt}")
 
     def get_revision_dir(self) -> str:
-        """Get directory for current revision."""
+        """Get directory for current revision within attempt."""
         return os.path.join(self.get_attempt_dir(), f"revision_{self.revision}")
 
+    def get_proof_dir(self) -> str:
+        """Get directory for current proof attempt."""
+        return os.path.join(self.get_revision_dir(), f"proof_{self.proof}")
+
     def save_decomposition(self, decomposition: dict) -> None:
-        """Save decomposition to file."""
+        """Save decomposition to the current revision directory.
+
+        Each revision has one decomposition.yaml that applies to all proofs within it.
+        """
         self.decomposition = decomposition
-        path = os.path.join(self.get_attempt_dir(), "decomposition.yaml")
+        revision_dir = self.get_revision_dir()
+        os.makedirs(revision_dir, exist_ok=True)
+        path = os.path.join(revision_dir, "decomposition.yaml")
         write_file(path, yaml.dump(decomposition, default_flow_style=False))
 
     def load_decomposition(self) -> dict | None:
-        """Load decomposition from file."""
-        path = os.path.join(self.get_attempt_dir(), "decomposition.yaml")
+        """Load decomposition from the current revision directory."""
+        path = os.path.join(self.get_revision_dir(), "decomposition.yaml")
         content = read_file(path)
         if content:
             self.decomposition = yaml.safe_load(content)
             return self.decomposition
         return None
 
-    def get_step_dir(self, step_id: str) -> str:
-        """Get directory for a step under current revision."""
-        return os.path.join(self.get_revision_dir(), f"step_{step_id}")
+    def save_proof(self, proof: str) -> None:
+        """Save proof to the current proof attempt directory."""
+        proof_dir = self.get_proof_dir()
+        os.makedirs(proof_dir, exist_ok=True)
+        write_file(os.path.join(proof_dir, "proof.md"), proof)
+        # Also save to top-level output for final result
+        write_file(os.path.join(self.output_dir, "proof.md"), proof)
 
-    def get_step_round_dir(self, step_id: str, round_number: int) -> str:
-        """Get directory for a specific round of a step."""
-        return os.path.join(self.get_step_dir(step_id), f"round_{round_number}")
-
-    def save_step_proof(self, step_id: str, proof: str, round_number: int = None) -> None:
-        """Save a step proof. Writes to step/round_N/proof.md and step/proof.md (latest)."""
-        self.step_proofs[step_id] = proof
-        step_dir = self.get_step_dir(step_id)
-        os.makedirs(step_dir, exist_ok=True)
-        # Always write the "latest" file (used for resume and verification)
-        latest_path = os.path.join(step_dir, "proof.md")
-        write_file(latest_path, proof)
-        # Also write per-round file
-        if round_number is not None:
-            round_dir = self.get_step_round_dir(step_id, round_number)
-            os.makedirs(round_dir, exist_ok=True)
-            write_file(os.path.join(round_dir, "proof.md"), proof)
-
-    def save_step_verification(self, step_id: str, verification: str, round_number: int = None) -> None:
-        """Save a step verification result. Writes to step/round_N/verification.md and step/verification.md (latest)."""
-        step_dir = self.get_step_dir(step_id)
-        os.makedirs(step_dir, exist_ok=True)
-        # Always write the "latest" file (used for resume)
-        latest_path = os.path.join(step_dir, "verification.md")
-        write_file(latest_path, verification)
-        # Also write per-round file
-        if round_number is not None:
-            round_dir = self.get_step_round_dir(step_id, round_number)
-            os.makedirs(round_dir, exist_ok=True)
-            write_file(os.path.join(round_dir, "verification.md"), verification)
-
-    def save_regulator_decision(self, step_id: str, decision: str, response: str) -> None:
+    def save_regulator_decision(self, decision: str, response: str) -> None:
         """Save regulator decision."""
-        path = os.path.join(self.get_revision_dir(), "regulator_decisions.md")
-        existing = read_file(path)
-        entry = f"\n## Step {step_id}\n\n{response}\n\n---\n"
-        write_file(path, existing + entry)
+        path = os.path.join(self.get_proof_dir(), "regulator_decision.md")
+        write_file(path, response)
 
-    def mark_step_proved(self, step_id: str) -> None:
-        """Mark a step as proved."""
-        self.step_results[step_id] = "proved"
-        if self.decomposition:
-            for step in self.decomposition.get("steps", []):
-                if step["id"] == step_id:
-                    step["status"] = "proved"
-                    break
-            self.save_decomposition(self.decomposition)
-
-    def mark_step_failed(self, step_id: str) -> None:
-        """Mark a step as failed."""
-        self.step_results[step_id] = "failed"
+    def new_proof(self) -> None:
+        """Start a new proof attempt with the same decomposition (REVISE_PROOF)."""
+        self.proof += 1
+        os.makedirs(self.get_proof_dir(), exist_ok=True)
 
     def new_revision(self) -> None:
-        """Start a new revision - clear all step results and start fresh."""
+        """Start a new revision of the decomposition (REVISE_PLAN)."""
         self.revision += 1
-        self.step_proofs = {}
-        self.step_results = {}
+        self.proof = 1
         os.makedirs(self.get_revision_dir(), exist_ok=True)
+        os.makedirs(self.get_proof_dir(), exist_ok=True)
 
     def new_attempt(self) -> None:
-        """Start a completely new decomposition attempt."""
+        """Start a completely new decomposition attempt (REWRITE)."""
         # Save failure history
         if self.decomposition:
             self.attempt_history.append({
                 "attempt": self.attempt,
-                "revision": self.revision,
+                "revisions": self.revision,
+                "proofs": self.proof,
                 "decomposition": self.decomposition,
-                "step_results": self.step_results.copy(),
             })
         # Reset for new attempt
         self.attempt += 1
         self.revision = 1
+        self.proof = 1
         self.decomposition = None
-        self.step_proofs = {}
-        self.step_results = {}
         os.makedirs(self.get_attempt_dir(), exist_ok=True)
         os.makedirs(self.get_revision_dir(), exist_ok=True)
+        os.makedirs(self.get_proof_dir(), exist_ok=True)
 
     def get_failure_history(self) -> str:
         """Get formatted failure history for rewrite mode."""
@@ -409,11 +396,69 @@ class DecompositionState:
         lines = ["# Previous Attempt Failures\n"]
         for hist in self.attempt_history:
             lines.append(f"## Attempt {hist['attempt']}\n")
-            lines.append(f"Revisions tried: {hist['revision']}\n")
-            lines.append(f"Step results:\n")
-            for step_id, result in hist["step_results"].items():
-                lines.append(f"- {step_id}: {result}\n")
+            lines.append(f"Revisions tried: {hist['revisions']}\n")
+            lines.append(f"Proofs in last revision: {hist['proofs']}\n")
             lines.append("\n")
+        return "".join(lines)
+
+    def get_revision_summary(self) -> str:
+        """Get summary of proof attempts in current revision for regulator."""
+        lines = []
+        for i in range(1, self.proof):
+            proof_dir = os.path.join(self.get_revision_dir(), f"proof_{i}")
+            reg_decision = read_file(os.path.join(proof_dir, "regulator_decision.md"))
+            if reg_decision:
+                lines.append(f"## Proof Attempt {i}\n")
+                lines.append(f"Regulator decision:\n{reg_decision[:500]}...\n\n")
+        return "".join(lines) if lines else "This is the first proof attempt for this revision."
+
+    def get_full_attempt_history(self) -> str:
+        """Get comprehensive history of all attempts for FINAL mode failure analysis."""
+        lines = ["# Complete Attempt History\n\n"]
+
+        # Include saved history from previous attempts
+        for hist in self.attempt_history:
+            lines.append(f"## Attempt {hist['attempt']}\n")
+            lines.append(f"- Total revisions: {hist['revisions']}\n")
+            lines.append(f"- Proofs in last revision: {hist['proofs']}\n\n")
+
+        # Include current attempt details
+        lines.append(f"## Attempt {self.attempt} (current)\n")
+        lines.append(f"- Total revisions: {self.revision}\n")
+        lines.append(f"- Proofs in current revision: {self.proof}\n\n")
+
+        # Scan all proof directories for verification reports and decisions
+        lines.append("### Detailed Proof History\n\n")
+        for a in range(1, self.attempt + 1):
+            attempt_dir = os.path.join(self.decomp_dir, f"attempt_{a}")
+            if not os.path.isdir(attempt_dir):
+                continue
+            max_rev = self.revision if a == self.attempt else _find_max_numbered_dir(attempt_dir, "revision_")
+            for r in range(1, max_rev + 1):
+                revision_dir = os.path.join(attempt_dir, f"revision_{r}")
+                if not os.path.isdir(revision_dir):
+                    continue
+                max_proof = self.proof if (a == self.attempt and r == self.revision) else _find_max_numbered_dir(revision_dir, "proof_")
+                for p in range(1, max_proof + 1):
+                    proof_dir = os.path.join(revision_dir, f"proof_{p}")
+                    lines.append(f"#### Attempt {a}, Revision {r}, Proof {p}\n")
+
+                    # Check verification results
+                    structural = read_file(os.path.join(proof_dir, "structural_verification.md"))
+                    detailed = read_file(os.path.join(proof_dir, "detailed_verification.md"))
+                    decision = read_file(os.path.join(proof_dir, "regulator_decision.md"))
+
+                    if structural:
+                        # Extract verdict summary (first few lines)
+                        verdict_lines = structural.split('\n')[:5]
+                        lines.append(f"Structural verification:\n```\n{chr(10).join(verdict_lines)}...\n```\n")
+                    if detailed:
+                        verdict_lines = detailed.split('\n')[:5]
+                        lines.append(f"Detailed verification:\n```\n{chr(10).join(verdict_lines)}...\n```\n")
+                    if decision:
+                        lines.append(f"Regulator decision:\n```\n{decision[:300]}...\n```\n")
+                    lines.append("\n")
+
         return "".join(lines)
 
 
@@ -426,25 +471,44 @@ def _file_nonempty(path: str) -> bool:
     return os.path.isfile(path) and os.path.getsize(path) > 0
 
 
+def _find_max_numbered_dir(parent_dir: str, prefix: str) -> int:
+    """Find the highest numbered subdirectory with given prefix."""
+    if not os.path.isdir(parent_dir):
+        return 0
+    nums = []
+    for name in os.listdir(parent_dir):
+        if name.startswith(prefix):
+            try:
+                nums.append(int(name.split("_", 1)[1]))
+            except (ValueError, IndexError):
+                continue
+    return max(nums) if nums else 0
+
+
 def detect_decomposition_resume(output_dir: str) -> dict:
     """Scan the output directory for decomposition progress from a previous run.
 
+    Three-level hierarchy:
+    - attempt_N/           (REWRITE creates new attempt)
+      - revision_M/        (REVISE_PLAN creates new revision)
+        - decomposition.yaml
+        - proof_K/         (REVISE_PROOF creates new proof)
+          - proof.md
+          - structural_verification.md
+          - detailed_verification.md
+          - regulator_decision.md
+
     Returns a dict with resume information:
         {
-            "has_progress": bool,       # True if any prior progress found
-            "attempt": int,             # Attempt number to resume at
-            "revision": int,            # Revision number to resume at
-            "decomposition": dict|None, # Loaded decomposition (if exists)
-            "proved_steps": list[str],  # Steps already proved in current revision
-            "resume_point": str,        # Where to resume:
-                                        #   "fresh" - no progress
-                                        #   "decompose" - need decomposition
-                                        #   "prove_steps" - have decomposition, resume proving
-                                        #   "aggregate" - all steps proved, need aggregation
-                                        #   "verify_structural" - aggregated, need structural verification
-                                        #   "verify_detailed" - structural done, need detailed
-                                        #   "done" - proof verified successfully
-            "attempt_history": list,    # Previous attempt failures for REWRITE context
+            "has_progress": bool,
+            "attempt": int,
+            "revision": int,
+            "proof": int,
+            "decomposition": dict|None,
+            "resume_point": str,        # "fresh", "decompose", "prove",
+                                        # "verify_structural", "verify_detailed",
+                                        # "regulator", "done"
+            "attempt_history": list,
         }
     """
     decomp_dir = os.path.join(output_dir, "decomposition")
@@ -452,8 +516,8 @@ def detect_decomposition_resume(output_dir: str) -> dict:
         "has_progress": False,
         "attempt": 1,
         "revision": 1,
+        "proof": 1,
         "decomposition": None,
-        "proved_steps": [],
         "resume_point": "fresh",
         "attempt_history": [],
     }
@@ -462,165 +526,126 @@ def detect_decomposition_resume(output_dir: str) -> dict:
         return result
 
     # Find the highest attempt directory
-    attempt_nums = []
-    for name in os.listdir(decomp_dir):
-        if name.startswith("attempt_"):
-            try:
-                attempt_nums.append(int(name.split("_", 1)[1]))
-            except ValueError:
-                continue
-
-    if not attempt_nums:
+    latest_attempt = _find_max_numbered_dir(decomp_dir, "attempt_")
+    if latest_attempt == 0:
         return result
 
-    attempt_nums.sort()
-
-    # Build attempt history from completed (failed) attempts
+    # Build attempt history from previous (failed) attempts
     attempt_history = []
-    latest_attempt = attempt_nums[-1]
-
-    for att_num in attempt_nums[:-1]:
-        # Previous attempts are considered failed
+    for att_num in range(1, latest_attempt):
         att_dir = os.path.join(decomp_dir, f"attempt_{att_num}")
-        decomp_path = os.path.join(att_dir, "decomposition.yaml")
-        decomp_content = read_file(decomp_path)
-        if decomp_content:
-            decomp = yaml.safe_load(decomp_content)
-            # Find the last revision in this attempt
-            rev_nums = []
-            for name in os.listdir(att_dir):
-                if name.startswith("revision_"):
-                    try:
-                        rev_nums.append(int(name.split("_", 1)[1]))
-                    except ValueError:
-                        continue
-            last_rev = max(rev_nums) if rev_nums else 1
-            attempt_history.append({
-                "attempt": att_num,
-                "revision": last_rev,
-                "decomposition": decomp,
-                "step_results": {},  # Could scan but not critical for resume
-            })
+        last_rev = _find_max_numbered_dir(att_dir, "revision_")
+        if last_rev > 0:
+            rev_dir = os.path.join(att_dir, f"revision_{last_rev}")
+            decomp_path = os.path.join(rev_dir, "decomposition.yaml")
+            decomp_content = read_file(decomp_path)
+            if decomp_content:
+                last_proof = _find_max_numbered_dir(rev_dir, "proof_")
+                try:
+                    decomp = yaml.safe_load(decomp_content)
+                except yaml.YAMLError:
+                    decomp = None  # Skip invalid YAML in history
+                attempt_history.append({
+                    "attempt": att_num,
+                    "revisions": last_rev,
+                    "proofs": last_proof,
+                    "decomposition": decomp,
+                })
 
     result["attempt_history"] = attempt_history
     result["attempt"] = latest_attempt
 
     # Analyze the latest attempt
     att_dir = os.path.join(decomp_dir, f"attempt_{latest_attempt}")
+    latest_revision = _find_max_numbered_dir(att_dir, "revision_")
 
-    # Check if decomposition exists
-    decomp_path = os.path.join(att_dir, "decomposition.yaml")
-    decomp_content = read_file(decomp_path)
-    if not decomp_content:
+    if latest_revision == 0:
+        # No revision directories yet - need to start fresh decomposition
         result["has_progress"] = len(attempt_history) > 0
         result["resume_point"] = "decompose"
         return result
 
-    decomposition = yaml.safe_load(decomp_content)
-    result["decomposition"] = decomposition
-    result["has_progress"] = True
-
-    # Find the latest revision
-    rev_nums = []
-    for name in os.listdir(att_dir):
-        if name.startswith("revision_"):
-            try:
-                rev_nums.append(int(name.split("_", 1)[1]))
-            except ValueError:
-                continue
-
-    if not rev_nums:
-        result["resume_point"] = "prove_steps"
-        return result
-
-    latest_revision = max(rev_nums)
     result["revision"] = latest_revision
     rev_dir = os.path.join(att_dir, f"revision_{latest_revision}")
 
-    # Check proof verification status (post-aggregation)
-    verify_dir = os.path.join(rev_dir, "proof_verification")
-    if os.path.isdir(verify_dir):
-        detailed_path = os.path.join(verify_dir, "detailed_verification.md")
-        structural_path = os.path.join(verify_dir, "structural_verification.md")
+    # Check if decomposition exists in this revision
+    decomp_path = os.path.join(rev_dir, "decomposition.yaml")
+    decomp_content = read_file(decomp_path)
+    if not decomp_content:
+        # Revision directory exists but no decomposition - need decomposition
+        result["has_progress"] = len(attempt_history) > 0 or latest_revision > 1
+        # If revision > 1, we're in the middle of a REVISE operation
+        # If revision == 1, we're starting fresh (CREATE or REWRITE)
+        if latest_revision > 1:
+            result["resume_point"] = "decompose_revise"
+        else:
+            result["resume_point"] = "decompose"
+        return result
 
-        if _file_nonempty(detailed_path):
-            # Check if it passed
-            content = read_file(detailed_path)
-            if "OVERALL VERDICT: PASS" in content.upper():
-                result["resume_point"] = "done"
-                return result
-            # Detailed verification exists but FAILED — regulator should have been called
-            # Check if combined_feedback exists (regulator was consulted)
-            combined_path = os.path.join(verify_dir, "combined_feedback.md")
-            if _file_nonempty(combined_path):
-                # Regulator was consulted, but we got interrupted after.
-                # The safest resume is to re-run from prove_steps with a new revision.
-                # But we don't know the regulator decision. Start fresh from prove_steps
-                # on the current decomposition (it may have been revised).
-                result["resume_point"] = "prove_steps"
-                result["proved_steps"] = []
-                return result
-            # No combined feedback — interrupted during/after verification before regulator
-            # Re-run from verify_detailed (structural already done)
+    try:
+        decomposition = yaml.safe_load(decomp_content)
+    except yaml.YAMLError:
+        # Invalid YAML in current decomposition - need to re-decompose
+        result["has_progress"] = len(attempt_history) > 0 or latest_revision > 1
+        result["resume_point"] = "decompose" if latest_revision == 1 else "decompose_revise"
+        return result
+    result["decomposition"] = decomposition
+    result["has_progress"] = True
+
+    # Find the latest proof attempt
+    latest_proof = _find_max_numbered_dir(rev_dir, "proof_")
+    if latest_proof == 0:
+        # No proof directories yet - need to start proving
+        result["resume_point"] = "prove"
+        return result
+
+    result["proof"] = latest_proof
+    proof_dir = os.path.join(rev_dir, f"proof_{latest_proof}")
+
+    # Check verification status
+    detailed_path = os.path.join(proof_dir, "detailed_verification.md")
+    structural_path = os.path.join(proof_dir, "structural_verification.md")
+    proof_path = os.path.join(proof_dir, "proof.md")
+    regulator_path = os.path.join(proof_dir, "regulator_decision.md")
+
+    # Check if detailed verification exists and passed
+    if _file_nonempty(detailed_path):
+        content = read_file(detailed_path)
+        if "OVERALL VERDICT: PASS" in content.upper():
+            result["resume_point"] = "done"
+            return result
+        # Detailed failed - check if regulator was called
+        if _file_nonempty(regulator_path):
+            # Regulator was called, need to start new proof attempt
+            result["proof"] = latest_proof + 1
+            result["resume_point"] = "prove"
+            return result
+        # No regulator decision yet - need to call regulator
+        result["resume_point"] = "regulator"
+        return result
+
+    # Check if structural verification exists
+    if _file_nonempty(structural_path):
+        content = read_file(structural_path)
+        if "OVERALL VERDICT: PASS" in content.upper():
+            # Structural passed, need detailed
             result["resume_point"] = "verify_detailed"
             return result
-
-        if _file_nonempty(structural_path):
-            # Structural done, check if it passed
-            content = read_file(structural_path)
-            if "OVERALL VERDICT: PASS" in content.upper():
-                # Structural passed, need detailed
-                result["resume_point"] = "verify_detailed"
-            else:
-                # Structural failed — same situation as detailed fail without regulator
-                result["resume_point"] = "prove_steps"
-                result["proved_steps"] = []
+        # Structural failed - check if regulator was called
+        if _file_nonempty(regulator_path):
+            result["proof"] = latest_proof + 1
+            result["resume_point"] = "prove"
             return result
+        result["resume_point"] = "regulator"
+        return result
 
-    # Check if proof.md exists (aggregation done but verification not started)
-    proof_file = os.path.join(output_dir, "proof.md")
-    if _file_nonempty(proof_file):
-        # Check if all steps in decomposition are proved by scanning step files
-        steps = decomposition.get("steps", [])
-        step_ids = [s["id"] for s in steps if s["id"] != "GOAL"]
-        proved_steps = []
-        for step_id in step_ids:
-            step_dir = os.path.join(rev_dir, f"step_{step_id}")
-            proof_path = os.path.join(step_dir, "proof.md")
-            verify_path = os.path.join(step_dir, "verification.md")
-            if _file_nonempty(proof_path) and _file_nonempty(verify_path):
-                # Check if verification passed
-                v_content = read_file(verify_path)
-                if parse_verdict(v_content) == "PASS":
-                    proved_steps.append(step_id)
+    # Check if proof exists
+    if _file_nonempty(proof_path):
+        result["resume_point"] = "verify_structural"
+        return result
 
-        if len(proved_steps) == len(step_ids):
-            # All steps proved — proof.md exists, need verification
-            result["proved_steps"] = proved_steps
-            result["resume_point"] = "verify_structural"
-            return result
-
-    # Check step-level progress
-    steps = decomposition.get("steps", [])
-    step_ids = [s["id"] for s in steps if s["id"] != "GOAL"]
-    proved_steps = []
-    for step_id in step_ids:
-        step_dir = os.path.join(rev_dir, f"step_{step_id}")
-        proof_path = os.path.join(step_dir, "proof.md")
-        verify_path = os.path.join(step_dir, "verification.md")
-        if _file_nonempty(proof_path) and _file_nonempty(verify_path):
-            v_content = read_file(verify_path)
-            if parse_verdict(v_content) == "PASS":
-                proved_steps.append(step_id)
-
-    result["proved_steps"] = proved_steps
-
-    if len(proved_steps) == len(step_ids):
-        # All steps proved but no proof.md — need aggregation
-        result["resume_point"] = "aggregate"
-    else:
-        result["resume_point"] = "prove_steps"
-
+    # Have decomposition but no proof yet
+    result["resume_point"] = "prove"
     return result
 
 
@@ -682,40 +707,48 @@ async def run_decomposer(
     config: dict,
     claude_opts: dict,
     mode: str = "CREATE",
-    failed_step_id: str = "",
-    failure_feedback: str = "",
-    prover_attempts_file: str = "",
+    verification_feedback: str = "",
+    regulator_guidance: str = "",
     decomp_logger: DecompositionLogger = None,
     tracker=None,
 ) -> dict:
-    """Run the decomposer agent to create/revise/rewrite a decomposition."""
+    """Run the decomposer agent to create/revise/rewrite a decomposition.
+
+    Args:
+        mode: "CREATE" for fresh decomposition, "REVISE" to modify plan based on
+              verification feedback, "REWRITE" for completely new strategy.
+        verification_feedback: Combined verification report (for REVISE mode).
+        regulator_guidance: Regulator's suggestions for the decomposer (for REVISE/REWRITE).
+    """
 
     model_provider = get_agent_model(config, "decomposer")
 
     # Build revision context based on mode
     revision_context = ""
     if mode == "REVISE":
-        # Use provided prover_attempts_file if available (caller captures path
-        # before state.new_revision() changes the revision number)
-        attempts_path = prover_attempts_file or (
-            os.path.join(state.get_revision_dir(), "proof.md") if failed_step_id == "AGGREGATED_PROOF"
-            else os.path.join(state.get_step_dir(failed_step_id), "proof.md") if failed_step_id else ""
-        )
+        # Get the previous revision's decomposition and last proof
+        prev_rev_num = state.revision - 1
+        prev_rev_dir = os.path.join(state.get_attempt_dir(), f"revision_{prev_rev_num}")
+        prev_decomp_file = os.path.join(prev_rev_dir, "decomposition.yaml")
+        # Find the last proof in the previous revision
+        last_proof = _find_max_numbered_dir(prev_rev_dir, "proof_")
+        prev_proof_file = os.path.join(prev_rev_dir, f"proof_{last_proof}", "proof.md") if last_proof > 0 else ""
+
         revision_context = f"""
 ### Current Decomposition (to revise)
 ```
-{state.get_attempt_dir()}/decomposition.yaml
+{prev_decomp_file}
 ```
 
-### Failed Step
-ID: {failed_step_id}
+### Verification Feedback
+{verification_feedback}
 
-### Failure Feedback
-{failure_feedback}
+### Regulator Guidance
+{regulator_guidance}
 
-### Prover Attempts
+### Previous Proof Attempt
 ```
-{attempts_path}
+{prev_proof_file}
 ```
 """
     elif mode == "REWRITE":
@@ -723,13 +756,25 @@ ID: {failed_step_id}
 ### Failure History
 {state.get_failure_history()}
 
+### Regulator Guidance
+{regulator_guidance}
+
 ### Previous Decomposition Attempts
-See {state.decomp_dir}/attempt_*/decomposition.yaml
+See {state.decomp_dir}/attempt_*/revision_*/decomposition.yaml
 """
 
     # Resolve human help file (global prover guidance from user)
     project_root = os.path.dirname(prompts_dir)
     human_help_file = os.path.join(project_root, "human_help", "additional_prove_human_help_global.md")
+
+    # Ensure revision directory exists for output
+    revision_dir = state.get_revision_dir()
+    os.makedirs(revision_dir, exist_ok=True)
+    decomposition_output_file = os.path.join(revision_dir, "decomposition.yaml")
+
+    # For REVISE mode, point to previous revision's decomposition
+    prev_rev_num = state.revision - 1 if mode == "REVISE" else state.revision
+    prev_decomp_file = os.path.join(state.get_attempt_dir(), f"revision_{prev_rev_num}", "decomposition.yaml")
 
     prompt = load_prompt(
         prompts_dir,
@@ -743,11 +788,11 @@ See {state.decomp_dir}/attempt_*/decomposition.yaml
         attempt_number=state.attempt,
         revision_number=state.revision,
         timestamp=datetime.now().isoformat(),
-        output_file=os.path.join(state.get_attempt_dir(), "decomposition.yaml"),
-        current_decomposition_file=os.path.join(state.get_attempt_dir(), "decomposition.yaml"),
-        failed_step_id=failed_step_id,
-        failure_feedback=failure_feedback,
-        prover_attempts_file=prover_attempts_file or (os.path.join(state.get_revision_dir(), "proof.md") if failed_step_id == "AGGREGATED_PROOF" else (os.path.join(state.get_step_dir(failed_step_id), "proof.md") if failed_step_id else "")),
+        output_file=decomposition_output_file,
+        current_decomposition_file=prev_decomp_file if mode == "REVISE" else decomposition_output_file,
+        verification_feedback=verification_feedback,
+        regulator_guidance=regulator_guidance,
+        previous_proof_file=prev_proof_file if mode == "REVISE" else "",
         failure_history_file=os.path.join(state.decomp_dir, "failure_history.md"),
         human_help_file=human_help_file,
     )
@@ -756,7 +801,7 @@ See {state.decomp_dir}/attempt_*/decomposition.yaml
         decomp_logger.log_agent_call(
             "decomposer", f"{mode} mode",
             model_provider,
-            {"attempt": state.attempt, "revision": state.revision}
+            {"attempt": state.attempt, "revision": state.revision, "proof": state.proof}
         )
         decomp_logger.update_status(
             state="DECOMPOSING",
@@ -776,24 +821,28 @@ See {state.decomp_dir}/attempt_*/decomposition.yaml
         call_name=f"decomposer_{mode.lower()}",
     )
 
-    # Save LLM response into structured path
+    # Save LLM response into structured path (in revision directory)
     if decomp_logger:
-        resp_path = os.path.join(state.get_attempt_dir(), "decomposer_response.md")
+        resp_path = os.path.join(revision_dir, "decomposer_response.md")
         decomp_logger.save_agent_output(response, resp_path)
         decomp_logger.log_agent_result("decomposer", f"{mode} completed")
 
     # Read the file the agent wrote via tool call
-    decomp_file_path = os.path.join(state.get_attempt_dir(), "decomposition.yaml")
-    decomposition = state.load_decomposition()
-    if decomposition:
-        return decomposition
+    try:
+        decomposition = state.load_decomposition()
+        if decomposition:
+            return decomposition
+    except yaml.YAMLError as e:
+        # Agent wrote invalid YAML to file - will try parsing response instead
+        if decomp_logger:
+            decomp_logger.log(f"Warning: Decomposition file has invalid YAML: {e}")
 
-    # Agent failed to write the file — fall back to parsing response text
+    # Agent failed to write the file or wrote invalid YAML — fall back to parsing response text
     try:
         decomposition = parse_decomposition(response)
     except (yaml.YAMLError, AttributeError) as e:
         raise RuntimeError(
-            f"Decomposer did not produce valid YAML and did not write to {decomp_file_path}.\n"
+            f"Decomposer did not produce valid YAML and did not write to {decomposition_output_file}.\n"
             f"Parse error: {e}\nResponse preview: {response[:500]}"
         ) from e
 
@@ -801,318 +850,70 @@ See {state.decomp_dir}/attempt_*/decomposition.yaml
     return decomposition
 
 
-async def run_step_prover(
+async def run_single_prover(
     state: DecompositionState,
-    step: dict,
-    inputs: list[dict],
     problem_file: str,
     related_work_file: str,
     prompts_dir: str,
     config: dict,
     claude_opts: dict,
-    round_number: int = 1,
-    previous_attempts: str = "",
-    proved_proofs: dict = None,
     decomp_logger: DecompositionLogger = None,
     tracker=None,
 ) -> str:
-    """Run the step prover agent to prove a single step."""
+    """Run the single prover agent to write a complete proof following the decomposition plan."""
 
-    model_provider = get_agent_model(config, "step_prover")
-
-    # Build step file content
-    step_content = yaml.dump(step, default_flow_style=False)
-
-    # Build inputs file content
-    inputs_content = "# Input Statements\n\n"
-    for inp in inputs:
-        inputs_content += f"## {inp['id']}\n\n{inp.get('statement', '')}\n\n"
-
-    # Build context of previously proved step proofs
-    # This gives the step prover visibility into HOW earlier steps were proved,
-    # not just WHAT they proved — critical for method compatibility.
-    proved_context = ""
-    if proved_proofs:
-        proved_context = "\n\n---\n\n# Proofs of Previously Proved Steps\n\n"
-        proved_context += "> These are the full proofs of steps that have already been verified. "
-        proved_context += "You may rely on the techniques, constructions, and intermediate results established here.\n\n"
-        for pid, pproof in proved_proofs.items():
-            proved_context += f"## Proof of {pid}\n\n{pproof}\n\n---\n\n"
-
-    # Build previous attempts context
-    previous_attempts_context = ""
-    if previous_attempts:
-        previous_attempts_context = f"""
-### Previous Attempts
-
-This is round {round_number} of proving this step. Previous attempts:
-
-{previous_attempts}
-
-Use the verifier feedback to improve your proof.
-"""
+    model_provider = get_agent_model(config, "single_prover")
 
     # Resolve human help file (global prover guidance from user)
     project_root = os.path.dirname(prompts_dir)
     human_help_file = os.path.join(project_root, "human_help", "additional_prove_human_help_global.md")
 
+    # Build the output path
+    proof_dir = state.get_proof_dir()
+    os.makedirs(proof_dir, exist_ok=True)
+    output_file = os.path.join(proof_dir, "proof.md")
+
+    # Decomposition is in the revision directory
+    decomposition_file = os.path.join(state.get_revision_dir(), "decomposition.yaml")
+
+    # Previous proof context: only for REVISE_PROOF (same revision, proof > 1)
+    # For new revision or new attempt, these are empty
+    previous_proof_file = ""
+    previous_verification_file = ""
+    if state.proof > 1:
+        prev_proof_dir = os.path.join(state.get_revision_dir(), f"proof_{state.proof - 1}")
+        previous_proof_file = os.path.join(prev_proof_dir, "proof.md")
+        # Use structural if detailed doesn't exist, otherwise use detailed
+        detailed_path = os.path.join(prev_proof_dir, "detailed_verification.md")
+        structural_path = os.path.join(prev_proof_dir, "structural_verification.md")
+        if os.path.exists(detailed_path):
+            previous_verification_file = detailed_path
+        elif os.path.exists(structural_path):
+            previous_verification_file = structural_path
+
     prompt = load_prompt(
         prompts_dir,
-        "decomposition-prover/step_prover.md",
-        step_file=step_content,
-        step_id=step["id"],
-        inputs_file=inputs_content,
+        "decomposition-prover/single_prover.md",
         problem_file=problem_file,
         related_work_file=related_work_file,
-        round_number=round_number,
-        previous_attempts_context=previous_attempts_context,
-        proved_steps_context=proved_context,
+        decomposition_file=decomposition_file,
         human_help_file=human_help_file,
-        output_file=os.path.join(state.get_step_dir(step["id"]), "proof.md"),
-        output_dir=state.output_dir,
-    )
-
-    # Pre-create directories so the agent can write to them
-    os.makedirs(state.get_step_dir(step["id"]), exist_ok=True)
-    os.makedirs(state.get_step_round_dir(step["id"], round_number), exist_ok=True)
-
-    if decomp_logger:
-        decomp_logger.log_agent_call(
-            "step_prover", f"Proving {step['id']}",
-            model_provider,
-            {"round": round_number, "is_key": step.get("is_key_step", False)}
-        )
-        decomp_logger.update_status(
-            state="PROVING_STEP",
-            current_step=step["id"],
-            current_round=round_number,
-            recent_activity=f"Proving step {step['id']} (round {round_number})"
-        )
-
-    response = await run_model(
-        provider=model_provider,
-        prompt=prompt,
-        working_dir=state.output_dir,
-        config=config,
-        claude_opts=get_claude_opts_for_model(config, model_provider) if model_provider == "claude" else claude_opts,
-        tracker=tracker,
-        call_name=f"step_prover_{step['id']}_r{round_number}",
-    )
-
-    # Save LLM response into structured path
-    if decomp_logger:
-        resp_path = os.path.join(state.get_step_round_dir(step["id"], round_number), "prover_response.md")
-        os.makedirs(os.path.dirname(resp_path), exist_ok=True)
-        decomp_logger.save_agent_output(response, resp_path)
-        decomp_logger.log_agent_result("step_prover", f"Step {step['id']} proof attempt complete")
-
-    # Read the file the agent wrote via tool call
-    expected_path = os.path.join(state.get_step_dir(step["id"]), "proof.md")
-    content = read_file(expected_path)
-    if not content:
-        # Agent failed to write the file — fall back to response text
-        content = response
-
-    state.save_step_proof(step["id"], content, round_number=round_number)
-    return content
-
-
-async def run_step_verifier(
-    state: DecompositionState,
-    step: dict,
-    proof: str,
-    inputs: list[dict],
-    prompts_dir: str,
-    config: dict,
-    claude_opts: dict,
-    round_number: int = 1,
-    decomp_logger: DecompositionLogger = None,
-    tracker=None,
-) -> tuple[str, str]:
-    """Run the step verifier agent. Returns (verdict, full_response)."""
-
-    model_provider = get_agent_model(config, "step_verifier")
-
-    # Build step file content
-    step_content = yaml.dump(step, default_flow_style=False)
-
-    # Build inputs file content
-    inputs_content = "# Input Statements\n\n"
-    for inp in inputs:
-        inputs_content += f"## {inp['id']}\n\n{inp.get('statement', '')}\n\n"
-
-    prompt = load_prompt(
-        prompts_dir,
-        "decomposition-prover/step_verifier.md",
-        step_file=step_content,
-        step_id=step["id"],
-        proof_file=proof,
-        inputs_file=inputs_content,
-        output_file=os.path.join(state.get_step_dir(step["id"]), "verification.md"),
-        output_dir=state.output_dir,
-    )
-
-    if decomp_logger:
-        decomp_logger.log_agent_call(
-            "step_verifier", f"Verifying {step['id']}",
-            model_provider,
-            {}
-        )
-        decomp_logger.update_status(
-            state="VERIFYING_STEP",
-            current_step=step["id"],
-            recent_activity=f"Verifying step {step['id']}"
-        )
-
-    # Pre-create directories so the agent can write to them
-    os.makedirs(state.get_step_dir(step["id"]), exist_ok=True)
-    os.makedirs(state.get_step_round_dir(step["id"], round_number), exist_ok=True)
-
-    response = await run_model(
-        provider=model_provider,
-        prompt=prompt,
-        working_dir=state.output_dir,
-        config=config,
-        claude_opts=get_claude_opts_for_model(config, model_provider) if model_provider == "claude" else claude_opts,
-        tracker=tracker,
-        call_name=f"step_verifier_{step['id']}",
-    )
-
-    # Save LLM response into structured path
-    if decomp_logger:
-        resp_path = os.path.join(state.get_step_round_dir(step["id"], round_number), "verifier_response.md")
-        os.makedirs(os.path.dirname(resp_path), exist_ok=True)
-        decomp_logger.save_agent_output(response, resp_path)
-
-    # Read the file the agent wrote via tool call
-    expected_path = os.path.join(state.get_step_dir(step["id"]), "verification.md")
-    content = read_file(expected_path)
-    if not content:
-        # Agent failed to write the file — fall back to response text
-        content = response
-
-    state.save_step_verification(step["id"], content, round_number=round_number)
-    verdict = parse_verdict(content)
-
-    if decomp_logger:
-        decomp_logger.log_agent_result("step_verifier", f"Step {step['id']} verdict: {verdict}")
-
-    return verdict, content
-
-
-async def run_regulator(
-    state: DecompositionState,
-    step: dict,
-    attempts_history: str,
-    latest_verification: str,
-    config: dict,
-    prompts_dir: str,
-    claude_opts: dict,
-    rounds_used: int,
-    decomp_logger: DecompositionLogger = None,
-    tracker=None,
-) -> str:
-    """Run the regulator agent to decide next action. Returns decision string."""
-
-    model_provider = get_agent_model(config, "regulator")
-    decomp_config = config.get("decomposition", DEFAULT_CONFIG)
-
-    # Build state file content
-    state_content = f"""
-attempt: {state.attempt}
-revision: {state.revision}
-step_id: {step['id']}
-rounds_for_step: {rounds_used}
-max_prover_rounds: {decomp_config.get('max_prover_rounds', 5)}
-max_revisions: {decomp_config.get('max_revisions', 3)}
-max_decompositions: {decomp_config.get('max_decompositions', 3)}
-"""
-
-    prompt = load_prompt(
-        prompts_dir,
-        "decomposition-prover/regulator.md",
-        state_file=state_content,
-        step_file=yaml.dump(step, default_flow_style=False),
-        attempts_file=attempts_history,
-        verification_file=latest_verification,
-        max_prover_rounds=decomp_config.get('max_prover_rounds', 5),
-        max_revisions=decomp_config.get('max_revisions', 3),
-        max_decompositions=decomp_config.get('max_decompositions', 3),
-        output_file=os.path.join(state.get_revision_dir(), "regulator_decision.md"),
-    )
-
-    if decomp_logger:
-        decomp_logger.log_agent_call(
-            "regulator", f"Evaluating {step['id']}",
-            model_provider,
-            {"rounds_used": rounds_used}
-        )
-        decomp_logger.update_status(
-            state="REGULATING",
-            current_step=step["id"],
-            recent_activity=f"Regulator evaluating step {step['id']} after {rounds_used} rounds"
-        )
-
-    response = await run_model(
-        provider=model_provider,
-        prompt=prompt,
-        working_dir=state.output_dir,
-        config=config,
-        claude_opts=get_claude_opts_for_model(config, model_provider) if model_provider == "claude" else claude_opts,
-        tracker=tracker,
-        call_name=f"regulator_{step['id']}",
-    )
-
-    # Check if the agent wrote the decision file via tool call
-    expected_path = os.path.join(state.get_revision_dir(), "regulator_decision.md")
-    content = read_file(expected_path)
-    if not content:
-        content = response
-
-    decision = parse_regulator_decision(content)
-    state.save_regulator_decision(step["id"], decision, content)
-
-    # Save LLM response into structured path
-    if decomp_logger:
-        resp_path = os.path.join(state.get_revision_dir(), f"regulator_{step['id']}_response.md")
-        decomp_logger.save_agent_output(response, resp_path)
-        decomp_logger.log_agent_result("regulator", f"Decision for {step['id']}: {decision}")
-
-    return decision
-
-
-async def run_proof_aggregator(
-    state: DecompositionState,
-    problem_file: str,
-    prompts_dir: str,
-    config: dict,
-    claude_opts: dict,
-    output_file: str,
-    decomp_logger: DecompositionLogger = None,
-    tracker=None,
-) -> str:
-    """Run the proof aggregator to combine step proofs into final proof.md."""
-
-    model_provider = get_agent_model(config, "proof_aggregator")
-
-    prompt = load_prompt(
-        prompts_dir,
-        "decomposition-prover/proof_aggregator.md",
-        decomposition_file=os.path.join(state.get_attempt_dir(), "decomposition.yaml"),
-        step_proofs_dir=state.get_revision_dir(),
-        problem_file=problem_file,
+        previous_proof_file=previous_proof_file,
+        previous_verification_file=previous_verification_file,
         output_file=output_file,
+        output_dir=state.output_dir,
     )
 
     if decomp_logger:
         decomp_logger.log_agent_call(
-            "proof_aggregator", "Assembling final proof",
+            "single_prover", "Writing complete proof",
             model_provider,
-            {}
+            {"attempt": state.attempt, "revision": state.revision, "proof": state.proof}
         )
         decomp_logger.update_status(
-            state="AGGREGATING",
-            recent_activity="Assembling final proof from step proofs"
+            state="PROVING",
+            proof=state.proof,
+            recent_activity=f"Writing proof (attempt {state.attempt}, revision {state.revision}, proof {state.proof})"
         )
 
     response = await run_model(
@@ -1122,13 +923,14 @@ async def run_proof_aggregator(
         config=config,
         claude_opts=get_claude_opts_for_model(config, model_provider) if model_provider == "claude" else claude_opts,
         tracker=tracker,
-        call_name="proof_aggregator",
+        call_name=f"single_prover_a{state.attempt}_r{state.revision}_p{state.proof}",
     )
 
     # Save LLM response into structured path
     if decomp_logger:
-        resp_path = os.path.join(state.get_revision_dir(), "aggregator_response.md")
+        resp_path = os.path.join(proof_dir, "prover_response.md")
         decomp_logger.save_agent_output(response, resp_path)
+        decomp_logger.log_agent_result("single_prover", "Proof written")
 
     # Read the file the agent wrote via tool call
     content = read_file(output_file)
@@ -1139,13 +941,124 @@ async def run_proof_aggregator(
             proof_start = content.find("# Proof")
             if proof_start >= 0:
                 content = content[proof_start:]
-        write_file(output_file, content)
 
+    # Save the proof
+    state.save_proof(content)
     return content
 
 
+async def run_regulator(
+    state: DecompositionState,
+    verification_report: str,
+    proof_file: str,
+    config: dict,
+    prompts_dir: str,
+    claude_opts: dict,
+    decomp_logger: DecompositionLogger = None,
+    tracker=None,
+    mode: str = "DECIDE",
+) -> str:
+    """Run the regulator agent to decide next action after verification failure.
+
+    Args:
+        mode: "DECIDE" for normal decision, "FINAL" for failure analysis when all limits exhausted
+
+    Returns:
+        In DECIDE mode: one of REVISE_PROOF, REVISE_PLAN, REWRITE
+        In FINAL mode: "FAILED" (failure analysis is written to file)
+    """
+
+    model_provider = get_agent_model(config, "regulator")
+    decomp_config = config.get("decomposition", DEFAULT_CONFIG)
+
+    # Build state file content
+    state_content = f"""
+attempt: {state.attempt}
+revision: {state.revision}
+proof: {state.proof}
+max_proof_attempts: {decomp_config.get('max_proof_attempts', 3)}
+max_revisions: {decomp_config.get('max_revisions', 2)}
+max_decompositions: {decomp_config.get('max_decompositions', 3)}
+"""
+
+    # Get attempt history (all attempts for FINAL mode, current revision for DECIDE mode)
+    if mode == "FINAL":
+        attempt_history = state.get_full_attempt_history()
+        output_file = os.path.join(state.decomp_dir, "failure_analysis.md")
+    else:
+        attempt_history = state.get_revision_summary()
+        output_file = os.path.join(state.get_proof_dir(), "regulator_decision.md")
+
+    prompt = load_prompt(
+        prompts_dir,
+        "decomposition-prover/regulator.md",
+        mode=mode,
+        state_file=state_content,
+        decomposition_file=os.path.join(state.get_revision_dir(), "decomposition.yaml"),
+        proof_file=proof_file,
+        verification_report=verification_report,
+        attempt_history=attempt_history,
+        max_proof_attempts=decomp_config.get('max_proof_attempts', 3),
+        max_revisions=decomp_config.get('max_revisions', 2),
+        max_decompositions=decomp_config.get('max_decompositions', 3),
+        output_file=output_file,
+    )
+
+    if decomp_logger:
+        if mode == "FINAL":
+            decomp_logger.log_agent_call(
+                "regulator", "Writing failure analysis",
+                model_provider,
+                {"mode": "FINAL", "attempt": state.attempt, "revision": state.revision, "proof": state.proof}
+            )
+            decomp_logger.update_status(
+                state="ANALYZING_FAILURE",
+                recent_activity="Regulator writing failure analysis (all limits exhausted)"
+            )
+        else:
+            decomp_logger.log_agent_call(
+                "regulator", "Evaluating verification failure",
+                model_provider,
+                {"attempt": state.attempt, "revision": state.revision, "proof": state.proof}
+            )
+            decomp_logger.update_status(
+                state="REGULATING",
+                recent_activity=f"Regulator evaluating after proof {state.proof} failed verification"
+            )
+
+    response = await run_model(
+        provider=model_provider,
+        prompt=prompt,
+        working_dir=state.output_dir,
+        config=config,
+        claude_opts=get_claude_opts_for_model(config, model_provider) if model_provider == "claude" else claude_opts,
+        tracker=tracker,
+        call_name=f"regulator_{mode.lower()}_a{state.attempt}_r{state.revision}_p{state.proof}",
+    )
+
+    # Check if the agent wrote the file via tool call
+    content = read_file(output_file)
+    if not content:
+        content = response
+        # Save content to expected location
+        write_file(output_file, content)
+
+    if mode == "FINAL":
+        if decomp_logger:
+            decomp_logger.log_agent_result("regulator", "Failure analysis complete")
+        return "FAILED"
+
+    decision = parse_regulator_decision(content)
+    state.save_regulator_decision(decision, content)
+
+    if decomp_logger:
+        decomp_logger.log_agent_result("regulator", f"Decision: {decision}")
+
+    return decision
+
+
 # ---------------------------------------------------------------------------
-# Post-aggregation verification
+# Proof verification
 # ---------------------------------------------------------------------------
 
 async def run_structural_verification(
@@ -1157,19 +1070,21 @@ async def run_structural_verification(
     claude_opts: dict,
     decomp_logger: DecompositionLogger = None,
     tracker=None,
-) -> tuple[str, str]:
-    """Run structural verification on the aggregated proof.
+) -> str:
+    """Run structural verification on the proof.
 
-    Returns (verdict, report_path) where verdict is "PASS" or "FAIL".
+    Returns the path to the verification report file.
+    The verdict is determined separately by run_verdict().
     """
-    model_provider = get_agent_model(config, "step_verifier")
+    model_provider = get_agent_model(config, "structural_verifier")
 
-    verify_dir = os.path.join(state.get_attempt_dir(), f"revision_{state.revision}", "proof_verification")
-    os.makedirs(verify_dir, exist_ok=True)
+    # Use proof directory for verification outputs
+    proof_dir = state.get_proof_dir()
+    os.makedirs(proof_dir, exist_ok=True)
 
-    output_file = os.path.join(verify_dir, "structural_verification.md")
-    error_file = os.path.join(verify_dir, "error_structural_verification.md")
-    decomposition_file = os.path.join(state.get_attempt_dir(), "decomposition.yaml")
+    output_file = os.path.join(proof_dir, "structural_verification.md")
+    error_file = os.path.join(proof_dir, "error_structural_verification.md")
+    decomposition_file = os.path.join(state.get_revision_dir(), "decomposition.yaml")
 
     # Global verification rules and prover guidance from human_help/
     project_root = os.path.dirname(prompts_dir)
@@ -1191,7 +1106,7 @@ async def run_structural_verification(
 
     if decomp_logger:
         decomp_logger.log_agent_call(
-            "step_verifier", "Structural verification of aggregated proof",
+            "structural_verifier", "Structural verification of aggregated proof",
             model_provider,
             {}
         )
@@ -1210,19 +1125,10 @@ async def run_structural_verification(
         call_name="proof_verify_structural",
     )
 
-    # Parse verdict from the output file
-    report = read_file(output_file)
-    verdict = "FAIL"
-    if report:
-        report_upper = report.upper()
-        # Look for overall verdict
-        if "### OVERALL VERDICT: PASS" in report_upper or "OVERALL VERDICT: PASS" in report_upper:
-            verdict = "PASS"
-
     if decomp_logger:
-        decomp_logger.log_agent_result("step_verifier", f"Structural verification: {verdict}")
+        decomp_logger.log_agent_result("structural_verifier", "Structural verification report generated")
 
-    return verdict, output_file
+    return output_file
 
 
 async def run_detailed_verification(
@@ -1235,19 +1141,21 @@ async def run_detailed_verification(
     claude_opts: dict,
     decomp_logger: DecompositionLogger = None,
     tracker=None,
-) -> tuple[str, str]:
-    """Run detailed verification on the aggregated proof.
+) -> str:
+    """Run detailed verification on the proof.
 
-    Returns (verdict, report_path) where verdict is "PASS" or "FAIL".
+    Returns the path to the verification report file.
+    The verdict is determined separately by run_verdict().
     """
-    model_provider = get_agent_model(config, "step_verifier")
+    model_provider = get_agent_model(config, "detailed_verifier")
 
-    verify_dir = os.path.join(state.get_attempt_dir(), f"revision_{state.revision}", "proof_verification")
-    os.makedirs(verify_dir, exist_ok=True)
+    # Use proof directory for verification outputs
+    proof_dir = state.get_proof_dir()
+    os.makedirs(proof_dir, exist_ok=True)
 
-    output_file = os.path.join(verify_dir, "detailed_verification.md")
-    error_file = os.path.join(verify_dir, "error_detailed_verification.md")
-    decomposition_file = os.path.join(state.get_attempt_dir(), "decomposition.yaml")
+    output_file = os.path.join(proof_dir, "detailed_verification.md")
+    error_file = os.path.join(proof_dir, "error_detailed_verification.md")
+    decomposition_file = os.path.join(state.get_revision_dir(), "decomposition.yaml")
 
     prompt = load_prompt(
         prompts_dir,
@@ -1263,7 +1171,7 @@ async def run_detailed_verification(
 
     if decomp_logger:
         decomp_logger.log_agent_call(
-            "step_verifier", "Detailed verification of aggregated proof",
+            "detailed_verifier", "Detailed verification of aggregated proof",
             model_provider,
             {}
         )
@@ -1282,18 +1190,85 @@ async def run_detailed_verification(
         call_name="proof_verify_detailed",
     )
 
-    # Parse verdict from the output file
-    report = read_file(output_file)
-    verdict = "FAIL"
-    if report:
-        report_upper = report.upper()
-        if "### OVERALL VERDICT: PASS" in report_upper or "OVERALL VERDICT: PASS" in report_upper:
-            verdict = "PASS"
+    if decomp_logger:
+        decomp_logger.log_agent_result("detailed_verifier", "Detailed verification report generated")
+
+    return output_file
+
+
+async def run_verdict(
+    state: DecompositionState,
+    structural_report_file: str,
+    prompts_dir: str,
+    config: dict,
+    claude_opts: dict,
+    mode: str = "FINAL",
+    detailed_report_file: str = "",
+    decomp_logger: DecompositionLogger = None,
+    tracker=None,
+) -> str:
+    """Run verdict check on verification reports.
+
+    Args:
+        mode: "STRUCTURAL" to check structural only, "FINAL" to check both
+        structural_report_file: Path to structural verification report
+        detailed_report_file: Path to detailed verification report (only for FINAL mode)
+
+    Returns "DONE" if verification passes, "CONTINUE" otherwise.
+    """
+    model_provider = get_agent_model(config, "verdict")
+
+    prompt = load_prompt(
+        prompts_dir,
+        "decomposition-prover/verdict_proof.md",
+        mode=mode,
+        structural_verification_file=structural_report_file,
+        detailed_verification_file=detailed_report_file if mode == "FINAL" else "",
+    )
 
     if decomp_logger:
-        decomp_logger.log_agent_result("step_verifier", f"Detailed verification: {verdict}")
+        if mode == "STRUCTURAL":
+            decomp_logger.log_agent_call(
+                "verdict", "Verdict on structural verification",
+                model_provider,
+                {"mode": mode}
+            )
+            decomp_logger.update_status(
+                state="VERDICT_STRUCTURAL",
+                recent_activity="Running structural verdict check"
+            )
+        else:
+            decomp_logger.log_agent_call(
+                "verdict", "Final verdict on verification results",
+                model_provider,
+                {"mode": mode}
+            )
+            decomp_logger.update_status(
+                state="VERDICT_FINAL",
+                recent_activity="Running final verdict check"
+            )
 
-    return verdict, output_file
+    response = await run_model(
+        provider=model_provider,
+        prompt=prompt,
+        working_dir=state.output_dir,
+        config=config,
+        claude_opts=get_claude_opts_for_model(config, model_provider) if model_provider == "claude" else claude_opts,
+        tracker=tracker,
+        call_name=f"verdict_{mode.lower()}",
+    )
+
+    # Parse verdict from response
+    response_upper = response.strip().upper()
+    if "DONE" in response_upper:
+        verdict = "DONE"
+    else:
+        verdict = "CONTINUE"
+
+    if decomp_logger:
+        decomp_logger.log_agent_result("verdict", f"{mode} verdict: {verdict}")
+
+    return verdict
 
 
 async def run_proof_verification(
@@ -1308,12 +1283,17 @@ async def run_proof_verification(
 ) -> tuple[str, str]:
     """Run full verification (structural + detailed) on the aggregated proof.
 
-    Returns (final_verdict, combined_feedback) where final_verdict is "PASS" or "FAIL"
+    NOTE: This function is currently unused. The main orchestration loop calls
+    run_structural_verification(), run_verdict(), run_detailed_verification(),
+    and run_verdict() directly for finer control over the flow. Kept as a
+    convenience wrapper for potential future use or testing.
+
+    Returns (final_verdict, combined_feedback) where final_verdict is "DONE" or "CONTINUE"
     and combined_feedback is the content of the verification reports for use by the
     decomposer on the next round.
     """
     # Step 1: Structural verification
-    structural_verdict, structural_report_file = await run_structural_verification(
+    structural_report_file = await run_structural_verification(
         state=state,
         problem_file=problem_file,
         proof_file=proof_file,
@@ -1324,14 +1304,26 @@ async def run_proof_verification(
         tracker=tracker,
     )
 
-    if structural_verdict == "FAIL":
+    # Step 2: Structural verdict
+    structural_verdict = await run_verdict(
+        state=state,
+        structural_report_file=structural_report_file,
+        prompts_dir=prompts_dir,
+        config=config,
+        claude_opts=claude_opts,
+        mode="STRUCTURAL",
+        decomp_logger=decomp_logger,
+        tracker=tracker,
+    )
+
+    if structural_verdict == "CONTINUE":
         feedback = read_file(structural_report_file)
         if decomp_logger:
-            decomp_logger.log("Structural verification FAILED — skipping detailed verification")
-        return "FAIL", feedback
+            decomp_logger.log("Structural verdict: CONTINUE — skipping detailed verification")
+        return "CONTINUE", feedback
 
-    # Step 2: Detailed verification (only if structural passed)
-    detailed_verdict, detailed_report_file = await run_detailed_verification(
+    # Step 3: Detailed verification (only if structural passed)
+    detailed_report_file = await run_detailed_verification(
         state=state,
         problem_file=problem_file,
         proof_file=proof_file,
@@ -1343,141 +1335,30 @@ async def run_proof_verification(
         tracker=tracker,
     )
 
+    # Step 4: Final verdict
+    final_verdict = await run_verdict(
+        state=state,
+        structural_report_file=structural_report_file,
+        prompts_dir=prompts_dir,
+        config=config,
+        claude_opts=claude_opts,
+        mode="FINAL",
+        detailed_report_file=detailed_report_file,
+        decomp_logger=decomp_logger,
+        tracker=tracker,
+    )
+
     # Combine feedback from both reports
     structural_report = read_file(structural_report_file)
     detailed_report = read_file(detailed_report_file)
     combined_feedback = f"# Structural Verification\n\n{structural_report}\n\n---\n\n# Detailed Verification\n\n{detailed_report}"
 
-    return detailed_verdict, combined_feedback
+    return final_verdict, combined_feedback
 
 
 # ---------------------------------------------------------------------------
 # Main orchestration
 # ---------------------------------------------------------------------------
-
-def get_step_inputs(decomposition: dict, step_id: str) -> list[dict]:
-    """Get the input statements for a step."""
-    inputs = []
-    step = None
-    for s in decomposition.get("steps", []):
-        if s["id"] == step_id:
-            step = s
-            break
-
-    if not step:
-        return inputs
-
-    input_ids = step.get("inputs", [])
-
-    # Check sources
-    for source in decomposition.get("sources", []):
-        if source["id"] in input_ids:
-            inputs.append(source)
-
-    # Check other steps
-    for s in decomposition.get("steps", []):
-        if s["id"] in input_ids:
-            inputs.append(s)
-
-    return inputs
-
-
-async def prove_step_with_retries(
-    state: DecompositionState,
-    step: dict,
-    inputs: list[dict],
-    problem_file: str,
-    related_work_file: str,
-    config: dict,
-    prompts_dir: str,
-    claude_opts: dict,
-    decomp_logger: DecompositionLogger = None,
-    tracker=None,
-) -> tuple[bool, str]:
-    """Prove a single step with retries and regulator intervention.
-
-    Returns (success, decision) where decision is the final regulator decision
-    if the step failed, or "PROVED" if successful.
-    """
-    decomp_config = config.get("decomposition", DEFAULT_CONFIG)
-    max_rounds = decomp_config.get("max_prover_rounds", 5)
-
-    # Gather proofs of ALL previously proved steps so the prover can see
-    # HOW they were proved — constructions, techniques, notation, and auxiliary
-    # properties established. Even non-dependency proofs provide valuable context
-    # about the overall proof strategy and available objects.
-    proved_proofs = {}
-    for sid, result in state.step_results.items():
-        if result == "proved" and sid in state.step_proofs:
-            proved_proofs[sid] = state.step_proofs[sid]
-
-    attempts_history = ""
-    verification = ""
-
-    for round_num in range(1, max_rounds + 1):
-        # Run step prover
-        proof = await run_step_prover(
-            state=state,
-            step=step,
-            inputs=inputs,
-            problem_file=problem_file,
-            related_work_file=related_work_file,
-            prompts_dir=prompts_dir,
-            config=config,
-            claude_opts=claude_opts,
-            round_number=round_num,
-            previous_attempts=attempts_history,
-            proved_proofs=proved_proofs,
-            decomp_logger=decomp_logger,
-            tracker=tracker,
-        )
-
-        # Run step verifier
-        verdict, verification = await run_step_verifier(
-            state=state,
-            step=step,
-            proof=proof,
-            inputs=inputs,
-            prompts_dir=prompts_dir,
-            config=config,
-            claude_opts=claude_opts,
-            round_number=round_num,
-            decomp_logger=decomp_logger,
-            tracker=tracker,
-        )
-
-        if verdict == "PASS":
-            state.mark_step_proved(step["id"])
-            if decomp_logger:
-                decomp_logger.update_status(
-                    steps_proved=list(k for k, v in state.step_results.items() if v == "proved")
-                )
-            return True, "PROVED"
-
-        # Add to attempts history for next round
-        attempts_history += f"\n## Round {round_num}\n\n### Proof Attempt\n\n{proof[:2000]}...\n\n### Verification Result\n\n{verification[:1000]}...\n\n"
-
-    # Step failed after max rounds - ask regulator
-    decision = await run_regulator(
-        state=state,
-        step=step,
-        attempts_history=attempts_history,
-        latest_verification=verification,
-        config=config,
-        prompts_dir=prompts_dir,
-        claude_opts=claude_opts,
-        rounds_used=max_rounds,
-        decomp_logger=decomp_logger,
-        tracker=tracker,
-    )
-
-    state.mark_step_failed(step["id"])
-    if decomp_logger:
-        decomp_logger.update_status(
-            steps_failed=list(k for k, v in state.step_results.items() if v == "failed")
-        )
-    return False, decision
-
 
 async def run_decomposition_prover(
     problem_file: str,
@@ -1492,15 +1373,22 @@ async def run_decomposition_prover(
 ) -> str:
     """Main entry point for decomposition-based proving.
 
+    Simplified pipeline:
+    1. Decomposer creates a proof plan (decomposition)
+    2. Single prover writes a complete proof following the plan
+    3. Structural verification (Phases 1-5)
+    4. Detailed verification (Phase 6)
+    5. If verification fails, regulator decides: REVISE_PROOF, REVISE_PLAN, or REWRITE
+
     Returns the content of the final proof.md.
     """
     decomp_config = config.get("decomposition", DEFAULT_CONFIG)
     max_decompositions = decomp_config.get("max_decompositions", 3)
-    max_revisions = decomp_config.get("max_revisions", 3)
+    max_revisions = decomp_config.get("max_revisions", 2)
+    max_proof_attempts = decomp_config.get("max_proof_attempts", 3)
 
     # Initialize state and logger
     state = DecompositionState(output_dir)
-
     decomp_logger = DecompositionLogger(output_dir)
 
     # Log model configuration
@@ -1521,30 +1409,20 @@ async def run_decomposition_prover(
     if resume_info["has_progress"]:
         state.attempt = resume_info["attempt"]
         state.revision = resume_info["revision"]
+        state.proof = resume_info["proof"]
         state.attempt_history = resume_info["attempt_history"]
         if resume_info["decomposition"]:
             state.decomposition = resume_info["decomposition"]
-        # Restore proved steps into state (both status and proof content)
-        for step_id in resume_info["proved_steps"]:
-            state.step_results[step_id] = "proved"
-            # Also load the proof content from disk so subsequent step provers
-            # can see how previously proved steps were proved
-            proof_path = os.path.join(
-                state.get_revision_dir(), f"step_{step_id}", "proof.md"
-            )
-            proof_content = read_file(proof_path)
-            if proof_content:
-                state.step_proofs[step_id] = proof_content
 
         decomp_logger.log(
-            f"RESUMING: attempt={state.attempt}, revision={state.revision}, "
-            f"resume_point={resume_point}, proved_steps={resume_info['proved_steps']}"
+            f"RESUMING: attempt={state.attempt}, revision={state.revision}, proof={state.proof}, "
+            f"resume_point={resume_point}"
         )
         decomp_logger.update_status(
             state="RESUMING",
             attempt=state.attempt,
             revision=state.revision,
-            steps_proved=resume_info["proved_steps"],
+            proof=state.proof,
             recent_activity=f"Resuming from {resume_point}"
         )
     else:
@@ -1553,108 +1431,159 @@ async def run_decomposition_prover(
             state="INITIALIZING",
             attempt=1,
             revision=1,
+            proof=1,
             recent_activity="Initializing decomposition prover"
         )
 
     os.makedirs(state.get_attempt_dir(), exist_ok=True)
     os.makedirs(state.get_revision_dir(), exist_ok=True)
+    os.makedirs(state.get_proof_dir(), exist_ok=True)
 
     # --- Handle mid-pipeline resume points ---
-    # If we're resuming at aggregate/verify_structural/verify_detailed, jump directly there
-    if resume_point in ("aggregate", "verify_structural", "verify_detailed"):
-        decomposition = state.decomposition
-        proof_file = os.path.join(output_dir, "proof.md")
+    verification_feedback = ""
+    regulator_guidance = ""
 
-        if resume_point == "aggregate":
-            decomp_logger.log("RESUMING: Aggregating proof (all steps proved)")
-            proof = await run_proof_aggregator(
-                state=state,
-                problem_file=problem_file,
-                prompts_dir=prompts_dir,
-                config=config,
-                claude_opts=claude_opts,
-                output_file=proof_file,
-                decomp_logger=decomp_logger,
-                tracker=tracker,
-            )
-            # Copy proof.md into the attempt/revision directory for record-keeping
-            revision_proof_copy = os.path.join(state.get_revision_dir(), "proof.md")
-            write_file(revision_proof_copy, proof)
+    # Handle decompose_revise resume: restore context from previous revision
+    if resume_point == "decompose_revise" and state.revision > 1:
+        prev_rev_dir = os.path.join(state.get_attempt_dir(), f"revision_{state.revision - 1}")
+        # Find the last proof in the previous revision
+        last_proof = _find_max_numbered_dir(prev_rev_dir, "proof_")
+        if last_proof > 0:
+            prev_proof_dir = os.path.join(prev_rev_dir, f"proof_{last_proof}")
+            # Restore verification feedback
+            detailed = read_file(os.path.join(prev_proof_dir, "detailed_verification.md"))
+            structural = read_file(os.path.join(prev_proof_dir, "structural_verification.md"))
+            if detailed or structural:
+                verification_feedback = f"# Structural Verification\n\n{structural}\n\n---\n\n# Detailed Verification\n\n{detailed}"
+            # Restore regulator guidance
+            regulator_guidance = read_file(os.path.join(prev_proof_dir, "regulator_decision.md"))
+            decomp_logger.log(f"RESUMING: Restored context from revision {state.revision - 1}")
+
+    if resume_point == "verify_structural":
+        # Have proof, need to run structural verification
+        proof_file = os.path.join(state.get_proof_dir(), "proof.md")
+        decomp_logger.log("RESUMING: Running structural verification")
+
+        structural_report_file = await run_structural_verification(
+            state=state,
+            problem_file=problem_file,
+            proof_file=proof_file,
+            prompts_dir=prompts_dir,
+            config=config,
+            claude_opts=claude_opts,
+            decomp_logger=decomp_logger,
+            tracker=tracker,
+        )
+
+        # Get verdict from the structural report
+        structural_verdict = await run_verdict(
+            state=state,
+            structural_report_file=structural_report_file,
+            prompts_dir=prompts_dir,
+            config=config,
+            claude_opts=claude_opts,
+            mode="STRUCTURAL",
+            decomp_logger=decomp_logger,
+            tracker=tracker,
+        )
+
+        if structural_verdict == "DONE":
+            resume_point = "verify_detailed"
         else:
-            proof = read_file(proof_file)
+            # Need regulator decision
+            resume_point = "regulator"
+            verification_feedback = read_file(structural_report_file)
 
-        if resume_point in ("aggregate", "verify_structural"):
-            decomp_logger.log("RESUMING: Running structural verification")
-            structural_verdict, structural_report_file = await run_structural_verification(
-                state=state,
-                problem_file=problem_file,
-                proof_file=proof_file,
-                prompts_dir=prompts_dir,
-                config=config,
-                claude_opts=claude_opts,
-                decomp_logger=decomp_logger,
-                tracker=tracker,
+    if resume_point == "verify_detailed":
+        # Structural passed, need detailed verification
+        proof_file = os.path.join(state.get_proof_dir(), "proof.md")
+        structural_report_file = os.path.join(state.get_proof_dir(), "structural_verification.md")
+        decomp_logger.log("RESUMING: Running detailed verification")
+
+        detailed_report_file = await run_detailed_verification(
+            state=state,
+            problem_file=problem_file,
+            proof_file=proof_file,
+            structural_report_file=structural_report_file,
+            prompts_dir=prompts_dir,
+            config=config,
+            claude_opts=claude_opts,
+            decomp_logger=decomp_logger,
+            tracker=tracker,
+        )
+
+        # Get final verdict from both reports
+        final_verdict = await run_verdict(
+            state=state,
+            structural_report_file=structural_report_file,
+            prompts_dir=prompts_dir,
+            config=config,
+            claude_opts=claude_opts,
+            mode="FINAL",
+            detailed_report_file=detailed_report_file,
+            decomp_logger=decomp_logger,
+            tracker=tracker,
+        )
+
+        if final_verdict == "DONE":
+            decomp_logger.log("Proof verification PASSED on resume. Done!")
+            decomp_logger.update_status(
+                state="COMPLETED",
+                recent_activity="Proof completed and verified successfully (resumed)"
             )
-            if structural_verdict == "FAIL":
-                # Fall through to the main loop for regulator handling
-                resume_point = "prove_steps"
-                state.step_results = {}
-                decomp_logger.log("Structural verification FAILED on resume — will consult regulator")
-                # Continue to main loop below
-            else:
-                resume_point = "verify_detailed"
+            return read_file(proof_file)
 
-        if resume_point == "verify_detailed":
-            decomp_logger.log("RESUMING: Running detailed verification")
-            verify_dir = os.path.join(state.get_attempt_dir(), f"revision_{state.revision}", "proof_verification")
-            structural_report_file = os.path.join(verify_dir, "structural_verification.md")
+        # Need regulator decision
+        resume_point = "regulator"
+        structural_report = read_file(structural_report_file)
+        detailed_report = read_file(detailed_report_file)
+        verification_feedback = f"# Structural Verification\n\n{structural_report}\n\n---\n\n# Detailed Verification\n\n{detailed_report}"
 
-            detailed_verdict, detailed_report_file = await run_detailed_verification(
-                state=state,
-                problem_file=problem_file,
-                proof_file=proof_file,
-                structural_report_file=structural_report_file,
-                prompts_dir=prompts_dir,
-                config=config,
-                claude_opts=claude_opts,
-                decomp_logger=decomp_logger,
-                tracker=tracker,
-            )
+    if resume_point == "regulator":
+        # Need to call regulator
+        proof_file = os.path.join(state.get_proof_dir(), "proof.md")
+        decomp_logger.log("RESUMING: Calling regulator after verification failure")
 
-            if detailed_verdict == "PASS":
-                decomp_logger.log("Proof verification PASSED on resume. Done!")
-                decomp_logger.update_status(
-                    state="COMPLETED",
-                    recent_activity="Proof completed and verified successfully (resumed)"
-                )
-                return proof
+        # If verification_feedback is empty (initial resume at "regulator"), read from files
+        if not verification_feedback:
+            proof_dir = state.get_proof_dir()
+            structural_report = read_file(os.path.join(proof_dir, "structural_verification.md"))
+            detailed_report = read_file(os.path.join(proof_dir, "detailed_verification.md"))
+            if structural_report or detailed_report:
+                verification_feedback = f"# Structural Verification\n\n{structural_report}\n\n---\n\n# Detailed Verification\n\n{detailed_report}"
 
-            # FAIL — fall through to main loop for regulator
-            decomp_logger.log("Detailed verification FAILED on resume — will consult regulator")
-            resume_point = "prove_steps"
-            state.step_results = {}
+        decision = await run_regulator(
+            state=state,
+            verification_report=verification_feedback,
+            proof_file=proof_file,
+            config=config,
+            prompts_dir=prompts_dir,
+            claude_opts=claude_opts,
+            decomp_logger=decomp_logger,
+            tracker=tracker,
+        )
+
+        # Get regulator guidance from the decision file
+        regulator_decision_file = os.path.join(state.get_proof_dir(), "regulator_decision.md")
+        regulator_guidance = read_file(regulator_decision_file)
+
+        if decision == "REVISE_PROOF":
+            state.new_proof()
+            resume_point = "prove"
+        elif decision == "REVISE_PLAN":
+            state.new_revision()
+            resume_point = "decompose_revise"
+        else:  # REWRITE
+            state.new_attempt()
+            resume_point = "decompose"
 
     # --- Main loop ---
-    decomp_attempt = state.attempt - 1  # Will be incremented at top of loop
-    initial_loop = True  # Flag: first iteration may skip decomposer if resuming
+    while state.attempt <= max_decompositions:
+        # === Step 1: Create/Revise/Rewrite decomposition ===
+        if resume_point in ("fresh", "decompose"):
+            mode = "CREATE" if state.attempt == 1 and not resume_info["has_progress"] else "REWRITE"
+            decomp_logger.log(f"Running decomposer in {mode} mode (attempt {state.attempt})")
 
-    while decomp_attempt < max_decompositions:
-        decomp_attempt += 1
-
-        if not initial_loop:
-            # Normal new attempt
-            state.new_attempt()
-            decomp_logger.update_status(
-                attempt=decomp_attempt,
-                revision=1,
-                steps_proved=[],
-                steps_failed=[],
-                recent_activity=f"Starting decomposition attempt {decomp_attempt}"
-            )
-
-        if not initial_loop or resume_point in ("fresh", "decompose"):
-            # Create initial decomposition (or rewrite)
-            mode = "CREATE" if decomp_attempt == 1 and not resume_info["has_progress"] else "REWRITE"
             decomposition = await run_decomposer(
                 state=state,
                 problem_file=problem_file,
@@ -1664,14 +1593,45 @@ async def run_decomposition_prover(
                 config=config,
                 claude_opts=claude_opts,
                 mode=mode,
+                regulator_guidance=regulator_guidance,
                 decomp_logger=decomp_logger,
                 tracker=tracker,
             )
+            regulator_guidance = ""  # Clear after use
+
+        elif resume_point == "decompose_revise":
+            decomp_logger.log(f"Running decomposer in REVISE mode (attempt {state.attempt})")
+
+            decomposition = await run_decomposer(
+                state=state,
+                problem_file=problem_file,
+                related_work_file=related_work_file,
+                difficulty_file=difficulty_file,
+                prompts_dir=prompts_dir,
+                config=config,
+                claude_opts=claude_opts,
+                mode="REVISE",
+                verification_feedback=verification_feedback,
+                regulator_guidance=regulator_guidance,
+                decomp_logger=decomp_logger,
+                tracker=tracker,
+            )
+            verification_feedback = ""
+            regulator_guidance = ""
+
         else:
             # Resuming with existing decomposition
-            decomposition = state.decomposition or state.load_decomposition()
+            decomposition = state.decomposition
             if not decomposition:
-                # Safety fallback: no decomposition found, create fresh
+                try:
+                    decomposition = state.load_decomposition()
+                except yaml.YAMLError as e:
+                    decomp_logger.log(f"Warning: Decomposition file has invalid YAML: {e}")
+                    decomposition = None
+            if not decomposition:
+                # Safety fallback: decomposition missing or corrupted, start fresh
+                decomp_logger.log("Warning: Decomposition missing on resume, creating new one")
+                state.proof = 1  # Reset proof counter since we're starting fresh
                 decomposition = await run_decomposer(
                     state=state,
                     problem_file=problem_file,
@@ -1685,166 +1645,48 @@ async def run_decomposition_prover(
                     tracker=tracker,
                 )
 
-        initial_loop = False  # After first iteration, normal flow
-
         key_steps = decomposition.get("key_steps", [])
         total_steps = len(decomposition.get("steps", []))
         decomp_logger.log(f"Decomposition: {total_steps} steps, {len(key_steps)} key steps")
 
-        # Try to prove all steps (with revisions)
-        all_proved = False
-        # When resuming, start revision_count at the current revision so we don't
-        # exceed max_revisions by miscounting prior revisions
-        revision_count = state.revision if (decomp_attempt == resume_info["attempt"]) else 0
-        decision = ""
-        need_retry_same_attempt = True  # Controls re-entering the prove loop after verification REVISE
+        # === Step 2-5: Proof attempts loop ===
+        while state.proof <= max_proof_attempts:
+            proof_dir = state.get_proof_dir()
+            os.makedirs(proof_dir, exist_ok=True)
+            proof_file = os.path.join(proof_dir, "proof.md")
 
-        while need_retry_same_attempt:
-            need_retry_same_attempt = False  # Will be set to True if verification triggers REVISE
-            all_proved = False  # Reset: only set True inside the proving loop
-            decision = ""  # Reset stale decision from previous iteration
-
-            # --- Prove all steps ---
-            while revision_count <= max_revisions:
-                all_proved = True
-
-                # Get proof order: key steps first, then others
-                key_steps = decomposition.get("key_steps", [])
-                proof_order = decomposition.get("proof_order", [])
-
-                # Reorder: key steps first (preserving their relative order
-                # from proof_order), then non-key steps in proof_order
-                key_ordered = [s for s in proof_order if s in key_steps]
-                non_key_ordered = [s for s in proof_order if s not in key_steps]
-                ordered_steps = key_ordered + non_key_ordered
-
-                # Remove GOAL from proving (it's proved by combining steps)
-                ordered_steps = [s for s in ordered_steps if s != "GOAL"]
-
-                for step_id in ordered_steps:
-                    # Skip already proved steps
-                    if state.step_results.get(step_id) == "proved":
-                        continue
-
-                    # Find the step
-                    step = None
-                    for s in decomposition.get("steps", []):
-                        if s["id"] == step_id:
-                            step = s
-                            break
-
-                    if not step:
-                        continue
-
-                    inputs = get_step_inputs(decomposition, step_id)
-
-                    success, decision = await prove_step_with_retries(
-                        state=state,
-                        step=step,
-                        inputs=inputs,
-                        problem_file=problem_file,
-                        related_work_file=related_work_file,
-                        config=config,
-                        prompts_dir=prompts_dir,
-                        claude_opts=claude_opts,
-                        decomp_logger=decomp_logger,
-                        tracker=tracker,
-                    )
-
-                    if not success:
-                        all_proved = False
-
-                        if decision == "REWRITE":
-                            decomp_logger.log(f"Regulator requested rewrite")
-                            break  # Exit step loop, trigger new decomposition
-
-                        else:  # REVISE
-                            decomp_logger.log(f"Regulator requested revision around step {step_id}")
-
-                            # Capture paths BEFORE new_revision() changes state.revision
-                            verify_path = os.path.join(state.get_step_dir(step_id), "verification.md")
-                            feedback = read_file(verify_path)
-                            old_prover_file = os.path.join(state.get_step_dir(step_id), "proof.md")
-
-                            state.new_revision()
-                            decomp_logger.update_status(
-                                revision=state.revision,
-                                recent_activity=f"Revising decomposition around step {step_id}"
-                            )
-
-                            decomposition = await run_decomposer(
-                                state=state,
-                                problem_file=problem_file,
-                                related_work_file=related_work_file,
-                                difficulty_file=difficulty_file,
-                                prompts_dir=prompts_dir,
-                                config=config,
-                                claude_opts=claude_opts,
-                                mode="REVISE",
-                                failed_step_id=step_id,
-                                failure_feedback=feedback,
-                                prover_attempts_file=old_prover_file,
-                                decomp_logger=decomp_logger,
-                                tracker=tracker,
-                            )
-                            revision_count += 1
-                            break  # Restart step proving with revised decomposition
-
-                else:
-                    # All steps proved successfully (for-else: no break)
-                    break
-
-                # Check if we need to break out for rewrite
-                if decision == "REWRITE":
-                    break
-
-            # --- After step proving loop ---
-
-            if not all_proved and decision != "REWRITE":
-                decomp_logger.log(f"Max revisions ({max_revisions}) exhausted, triggering rewrite")
+            # === Step 2: Run single prover ===
+            if resume_point in ("fresh", "decompose", "decompose_revise", "prove"):
+                decomp_logger.log(f"Running single prover (attempt {state.attempt}, revision {state.revision}, proof {state.proof})")
                 decomp_logger.update_status(
-                    state="REWRITING",
-                    recent_activity=f"Max revisions exhausted, starting new decomposition attempt"
+                    state="PROVING",
+                    attempt=state.attempt,
+                    revision=state.revision,
+                    proof=state.proof,
+                    recent_activity=f"Writing proof (proof {state.proof})"
                 )
-                break  # Break out to trigger new attempt
 
-            if not all_proved:
-                # decision == "REWRITE"
-                decomp_logger.log(f"Attempt {decomp_attempt} failed (steps not proved), trying new decomposition")
-                break  # Break out to trigger new attempt
+                proof = await run_single_prover(
+                    state=state,
+                    problem_file=problem_file,
+                    related_work_file=related_work_file,
+                    prompts_dir=prompts_dir,
+                    config=config,
+                    claude_opts=claude_opts,
+                    decomp_logger=decomp_logger,
+                    tracker=tracker,
+                )
 
-            # --- All steps proved: aggregate and verify ---
+            resume_point = "verify_structural"  # Normal flow continues to verification
 
-            decomp_logger.log("All steps proved! Aggregating final proof.")
+            # === Step 3: Structural verification ===
+            decomp_logger.log("Running structural verification")
             decomp_logger.update_status(
-                state="AGGREGATING",
-                recent_activity="All steps proved, aggregating final proof"
+                state="VERIFYING_STRUCTURAL",
+                recent_activity="Running structural verification (Phases 1-5)"
             )
 
-            proof_file = os.path.join(output_dir, "proof.md")
-            proof = await run_proof_aggregator(
-                state=state,
-                problem_file=problem_file,
-                prompts_dir=prompts_dir,
-                config=config,
-                claude_opts=claude_opts,
-                output_file=proof_file,
-                decomp_logger=decomp_logger,
-                tracker=tracker,
-            )
-
-            # Copy proof.md into the attempt/revision directory for record-keeping
-            revision_proof_copy = os.path.join(state.get_revision_dir(), "proof.md")
-            write_file(revision_proof_copy, proof)
-
-            decomp_logger.log("Final proof aggregated. Running verification...")
-            decomp_logger.update_status(
-                state="VERIFYING_PROOF",
-                recent_activity="Running structural + detailed verification on aggregated proof"
-            )
-
-            # Run full verification on the aggregated proof
-            proof_verdict, verification_feedback = await run_proof_verification(
+            structural_report_file = await run_structural_verification(
                 state=state,
                 problem_file=problem_file,
                 proof_file=proof_file,
@@ -1855,95 +1697,230 @@ async def run_decomposition_prover(
                 tracker=tracker,
             )
 
-            if proof_verdict == "PASS":
-                decomp_logger.log("Proof verification PASSED. Done!")
-                decomp_logger.update_status(
-                    state="COMPLETED",
-                    recent_activity="Proof completed and verified successfully"
-                )
-                return proof
-
-            # Verification FAILED — ask regulator whether to REVISE or REWRITE
-            decomp_logger.log("Proof verification FAILED. Consulting regulator...")
-            decomp_logger.update_status(
-                state="VERIFICATION_FAILED",
-                recent_activity="Proof verification failed, consulting regulator"
-            )
-
-            # Save verification feedback for the decomposer
-            feedback_path = os.path.join(
-                state.get_attempt_dir(), f"revision_{state.revision}",
-                "proof_verification", "combined_feedback.md"
-            )
-            write_file(feedback_path, verification_feedback)
-
-            proof_step = {
-                "id": "AGGREGATED_PROOF",
-                "statement": "The aggregated proof as a whole",
-                "difficulty": "hard",
-                "is_key_step": True,
-            }
-
-            regulator_decision = await run_regulator(
+            # === Step 3b: Structural verdict ===
+            decomp_logger.log("Running structural verdict check...")
+            structural_verdict = await run_verdict(
                 state=state,
-                step=proof_step,
-                attempts_history=f"The aggregated proof was assembled and verified.\n\nVerification result: FAIL\n\n{verification_feedback[:3000]}",
-                latest_verification=verification_feedback[:2000],
-                config=config,
+                structural_report_file=structural_report_file,
                 prompts_dir=prompts_dir,
+                config=config,
                 claude_opts=claude_opts,
-                rounds_used=1,
+                mode="STRUCTURAL",
                 decomp_logger=decomp_logger,
                 tracker=tracker,
             )
 
-            if regulator_decision == "REWRITE":
-                decomp_logger.log("Regulator decided REWRITE after proof verification failure")
-                break  # Break out to trigger new attempt
+            if structural_verdict == "CONTINUE":
+                # Get feedback and consult regulator
+                verification_feedback = read_file(structural_report_file)
+                decomp_logger.log("Structural verification FAILED. Consulting regulator...")
 
-            # REVISE after verification failure
-            decomp_logger.log("Regulator decided REVISE after proof verification failure")
-
-            if revision_count < max_revisions:
-                # Capture proof path BEFORE new_revision() changes state.revision
-                old_proof_file = os.path.join(state.get_revision_dir(), "proof.md")
-
-                state.new_revision()
-                state.step_proofs = {}
-                state.step_results = {}
-                revision_count += 1
-                decomp_logger.update_status(
-                    revision=state.revision,
-                    steps_proved=[],
-                    steps_failed=[],
-                    recent_activity="Revising decomposition based on proof verification feedback"
-                )
-
-                decomposition = await run_decomposer(
+                decision = await run_regulator(
                     state=state,
-                    problem_file=problem_file,
-                    related_work_file=related_work_file,
-                    difficulty_file=difficulty_file,
-                    prompts_dir=prompts_dir,
+                    verification_report=verification_feedback,
+                    proof_file=proof_file,
                     config=config,
+                    prompts_dir=prompts_dir,
                     claude_opts=claude_opts,
-                    mode="REVISE",
-                    failed_step_id="AGGREGATED_PROOF",
-                    failure_feedback=verification_feedback[:4000],
-                    prover_attempts_file=old_proof_file,
                     decomp_logger=decomp_logger,
                     tracker=tracker,
                 )
-                # Re-enter the prove loop with the revised decomposition
-                need_retry_same_attempt = True
-            else:
-                decomp_logger.log("Max revisions exhausted after verification failure, triggering rewrite")
-                break  # Break out to trigger new attempt
 
-    decomp_logger.log("All decomposition attempts exhausted")
+                regulator_decision_file = os.path.join(proof_dir, "regulator_decision.md")
+                regulator_guidance = read_file(regulator_decision_file)
+
+                if decision == "REVISE_PROOF":
+                    decomp_logger.log("Regulator: REVISE_PROOF - trying new proof with same plan")
+                    state.new_proof()
+                    resume_point = "prove"
+                    continue  # Continue proof attempts loop
+
+                elif decision == "REVISE_PLAN":
+                    decomp_logger.log("Regulator: REVISE_PLAN - revising decomposition")
+                    state.new_revision()
+                    resume_point = "decompose_revise"
+                    break  # Break to outer loop for decomposition revision
+
+                else:  # REWRITE
+                    decomp_logger.log("Regulator: REWRITE - starting new decomposition attempt")
+                    state.new_attempt()
+                    resume_point = "decompose"
+                    break  # Break to outer loop for new attempt
+
+            # === Step 4: Detailed verification ===
+            decomp_logger.log("Structural verdict DONE. Running detailed verification...")
+            decomp_logger.update_status(
+                state="VERIFYING_DETAILED",
+                recent_activity="Running detailed verification (Phase 6)"
+            )
+
+            detailed_report_file = await run_detailed_verification(
+                state=state,
+                problem_file=problem_file,
+                proof_file=proof_file,
+                structural_report_file=structural_report_file,
+                prompts_dir=prompts_dir,
+                config=config,
+                claude_opts=claude_opts,
+                decomp_logger=decomp_logger,
+                tracker=tracker,
+            )
+
+            # === Step 5: Final verdict ===
+            decomp_logger.log("Running final verdict check...")
+            final_verdict = await run_verdict(
+                state=state,
+                structural_report_file=structural_report_file,
+                prompts_dir=prompts_dir,
+                config=config,
+                claude_opts=claude_opts,
+                mode="FINAL",
+                detailed_report_file=detailed_report_file,
+                decomp_logger=decomp_logger,
+                tracker=tracker,
+            )
+
+            if final_verdict == "DONE":
+                # === Success! ===
+                decomp_logger.log("Final verdict: DONE. Proof completed successfully!")
+                decomp_logger.update_status(
+                    state="COMPLETED",
+                    recent_activity="Proof completed and verified successfully"
+                )
+                return read_file(proof_file)
+
+            # === Step 6: Verification failed - consult regulator ===
+            structural_report = read_file(structural_report_file)
+            detailed_report = read_file(detailed_report_file)
+            verification_feedback = f"# Structural Verification\n\n{structural_report}\n\n---\n\n# Detailed Verification\n\n{detailed_report}"
+
+            decomp_logger.log("Final verdict: CONTINUE. Consulting regulator...")
+
+            decision = await run_regulator(
+                state=state,
+                verification_report=verification_feedback,
+                proof_file=proof_file,
+                config=config,
+                prompts_dir=prompts_dir,
+                claude_opts=claude_opts,
+                decomp_logger=decomp_logger,
+                tracker=tracker,
+            )
+
+            regulator_decision_file = os.path.join(proof_dir, "regulator_decision.md")
+            regulator_guidance = read_file(regulator_decision_file)
+
+            if decision == "REVISE_PROOF":
+                decomp_logger.log("Regulator: REVISE_PROOF - trying new proof with same plan")
+                state.new_proof()
+                resume_point = "prove"
+                continue  # Continue proof attempts loop
+
+            elif decision == "REVISE_PLAN":
+                decomp_logger.log("Regulator: REVISE_PLAN - revising decomposition")
+                state.new_revision()
+                resume_point = "decompose_revise"
+                break  # Break to outer loop for decomposition revision
+
+            else:  # REWRITE
+                decomp_logger.log("Regulator: REWRITE - starting new decomposition attempt")
+                state.new_attempt()
+                resume_point = "decompose"
+                break  # Break to outer loop for new attempt
+
+        # Check if we exhausted proof attempts without breaking for revision/rewrite
+        if state.proof > max_proof_attempts:
+            # Try to escalate: first to REVISE_PLAN, then to REWRITE
+            # Clear stale regulator_guidance from REVISE_PROOF decisions and provide
+            # appropriate guidance for the escalation type
+            if state.revision < max_revisions:
+                decomp_logger.log(f"Max proof attempts ({max_proof_attempts}) exhausted, triggering plan revision")
+                state.new_revision()
+                resume_point = "decompose_revise"
+                # Provide synthetic guidance for plan revision (not stale REVISE_PROOF guidance)
+                regulator_guidance = (
+                    f"# Automatic Escalation to Plan Revision\n\n"
+                    f"All {max_proof_attempts} proof attempts for the previous revision failed verification. "
+                    f"The repeated failures suggest structural issues with the decomposition plan rather than "
+                    f"execution errors. Please revise the plan to address the persistent verification failures "
+                    f"shown in the verification feedback above."
+                )
+            else:
+                decomp_logger.log(f"Max revisions ({max_revisions}) exhausted, triggering rewrite")
+                state.new_attempt()
+                resume_point = "decompose"
+                # Provide synthetic guidance for rewrite
+                regulator_guidance = (
+                    f"# Automatic Escalation to Complete Rewrite\n\n"
+                    f"All {max_revisions} plan revisions have been exhausted without success. "
+                    f"The fundamental proof strategy appears to be flawed. Please design a "
+                    f"completely different approach to prove this problem."
+                )
+
+        # If we broke out for REVISE_PLAN, check revision limit
+        if resume_point == "decompose_revise":
+            if state.revision > max_revisions:
+                decomp_logger.log(f"Max revisions ({max_revisions}) exhausted, triggering rewrite")
+                state.new_attempt()
+                resume_point = "decompose"
+                # Update guidance for rewrite (was set for plan revision)
+                regulator_guidance = (
+                    f"# Escalation from Plan Revision to Complete Rewrite\n\n"
+                    f"The regulator suggested revising the plan, but all {max_revisions} revision slots "
+                    f"have been used. A completely new proof strategy is needed. "
+                    f"The previous plan revision guidance was:\n\n{regulator_guidance}"
+                )
+            else:
+                continue  # Continue with same attempt, revised plan
+
+        # Otherwise (REWRITE or exhausted), check if we have more attempts
+        if state.attempt > max_decompositions:
+            break
+
+    decomp_logger.log("All decomposition attempts exhausted - running final failure analysis")
+
+    # Find the last proof and verification for FINAL mode regulator
+    # We need to step back since state may have incremented past the last valid proof
+    last_proof_dir = None
+    for a in range(state.attempt, 0, -1):
+        attempt_dir = os.path.join(state.decomp_dir, f"attempt_{a}")
+        if not os.path.isdir(attempt_dir):
+            continue
+        max_rev = _find_max_numbered_dir(attempt_dir, "revision_")
+        for r in range(max_rev, 0, -1):
+            revision_dir = os.path.join(attempt_dir, f"revision_{r}")
+            max_p = _find_max_numbered_dir(revision_dir, "proof_")
+            if max_p > 0:
+                last_proof_dir = os.path.join(revision_dir, f"proof_{max_p}")
+                break
+        if last_proof_dir:
+            break
+
+    if last_proof_dir:
+        last_proof_file = os.path.join(last_proof_dir, "proof.md")
+        # Get the last verification report (prefer detailed over structural)
+        last_verification = read_file(os.path.join(last_proof_dir, "detailed_verification.md"))
+        if not last_verification:
+            last_verification = read_file(os.path.join(last_proof_dir, "structural_verification.md"))
+        if not last_verification:
+            last_verification = "No verification report found for last attempt."
+
+        # Call regulator in FINAL mode for failure analysis
+        await run_regulator(
+            state=state,
+            verification_report=last_verification,
+            proof_file=last_proof_file,
+            config=config,
+            prompts_dir=prompts_dir,
+            claude_opts=claude_opts,
+            decomp_logger=decomp_logger,
+            tracker=tracker,
+            mode="FINAL",
+        )
+
     decomp_logger.update_status(
         state="FAILED",
-        recent_activity="All decomposition attempts exhausted"
+        recent_activity="All decomposition attempts exhausted - failure analysis written"
     )
 
     return ""

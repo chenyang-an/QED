@@ -6,17 +6,18 @@ prover:
 # --- Decomposition Prover Settings ---
 # Only used when prover.mode = "decomposition"
 decomposition:
-  max_prover_rounds: 2     # rounds per step before asking regulator
-  max_revisions: 2         # local revisions per decomposition step
-  max_decompositions: 2     # complete decomposition rewrites allowed
+  max_proof_attempts: 3    # REVISE_PROOF limit: proof attempts per revision
+  max_revisions: 2         # REVISE_PLAN limit: plan revisions per attempt
+  max_decompositions: 2    # REWRITE limit: total decomposition attempts
 
   # Model selection for each agent (claude, codex, or gemini)
   models:
-    decomposer: "codex"       # creates/revises proof decomposition
-    step_prover: "codex"      # proves individual steps
-    step_verifier: "gemini"    # verifies step proofs
-    regulator: "codex"        # decides revise/rewrite/continue
-    proof_aggregator: "codex" # combines steps into final proof
+    decomposer: "codex"           # creates/revises proof decomposition plan
+    single_prover: "codex"        # executes decomposition plan, writes complete proof
+    regulator: "codex"            # decides REVISE_PROOF/REVISE_PLAN/REWRITE after verification fails
+    structural_verifier: "gemini" # structural verification of proof (Phases 1-5)
+    detailed_verifier: "gemini"   # detailed verification of proof (Phase 6)
+    verdict: "gemini"             # final verdict on verification reports (DONE/CONTINUE)
 
 pipeline:
   max_proof_iterations: 9

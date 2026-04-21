@@ -67,6 +67,19 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
         exists = os.path.exists(os.path.join(prompts_dir, pf))
         check(f"Prompt {pf} exists", exists)
 
+    # Decomposition mode prompts
+    decomposition_prompt_files = [
+        "decomposition-prover/decomposition.md",
+        "decomposition-prover/single_prover.md",
+        "decomposition-prover/regulator.md",
+        "decomposition-prover/proof_verify_structural.md",
+        "decomposition-prover/proof_verify_detailed.md",
+        "decomposition-prover/verdict_proof.md",
+    ]
+    for pf in decomposition_prompt_files:
+        exists = os.path.exists(os.path.join(prompts_dir, pf))
+        check(f"Prompt {pf} exists", exists)
+
     # -------------------------------------------------------
     # Test 2: Skill files exist
     # -------------------------------------------------------
@@ -202,6 +215,82 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
         check("proof_effort_summary.md renders OK", False, str(e))
 
     # -------------------------------------------------------
+    # Test 3b: Decomposition mode prompt loading
+    # -------------------------------------------------------
+    print("\n=== Test 3b: Decomposition prompt loading ===")
+
+    try:
+        prompt = load_prompt(
+            prompts_dir, "decomposition-prover/decomposition.md",
+            mode="CREATE",
+            problem_file="/tmp/test_problem.tex",
+            related_work_file="/tmp/test_related_work.md",
+            difficulty_file="/tmp/test_difficulty.md",
+            revision_context="",
+            problem_id="test_problem",
+            attempt_number=1,
+            revision_number=1,
+            timestamp="2024-01-01T00:00:00",
+            output_file="/tmp/test_decomposition.yaml",
+            current_decomposition_file="/tmp/test_decomposition.yaml",
+            verification_feedback="",
+            regulator_guidance="",
+            previous_proof_file="",
+            failure_history_file="/tmp/test_failure_history.md",
+            human_help_file="/tmp/test_human_help.md",
+        )
+        check("decomposition.md renders OK", "test_problem.tex" in prompt)
+        check("decomposition.md has mode", "CREATE" in prompt)
+    except Exception as e:
+        check("decomposition.md renders OK", False, str(e))
+
+    try:
+        prompt = load_prompt(
+            prompts_dir, "decomposition-prover/single_prover.md",
+            problem_file="/tmp/test_problem.tex",
+            related_work_file="/tmp/test_related_work.md",
+            decomposition_file="/tmp/test_decomposition.yaml",
+            human_help_file="/tmp/test_human_help.md",
+            previous_proof_file="",
+            previous_verification_file="",
+            output_file="/tmp/test_proof.md",
+            output_dir="/tmp/test_output",
+        )
+        check("single_prover.md renders OK", "test_problem.tex" in prompt)
+        check("single_prover.md has decomposition file", "test_decomposition.yaml" in prompt)
+    except Exception as e:
+        check("single_prover.md renders OK", False, str(e))
+
+    try:
+        prompt = load_prompt(
+            prompts_dir, "decomposition-prover/regulator.md",
+            mode="DECIDE",
+            state_file="attempt: 1\nrevision: 1\nproof: 1",
+            decomposition_file="/tmp/test_decomposition.yaml",
+            proof_file="/tmp/test_proof.md",
+            verification_report="Test verification report",
+            attempt_history="First attempt",
+            max_proof_attempts=3,
+            max_revisions=2,
+            max_decompositions=2,
+            output_file="/tmp/test_regulator_decision.md",
+        )
+        check("regulator.md renders OK", "DECIDE" in prompt)
+    except Exception as e:
+        check("regulator.md renders OK", False, str(e))
+
+    try:
+        prompt = load_prompt(
+            prompts_dir, "decomposition-prover/verdict_proof.md",
+            mode="STRUCTURAL",
+            structural_verification_file="/tmp/test_structural.md",
+            detailed_verification_file="",
+        )
+        check("verdict_proof.md (decomp) renders OK", "STRUCTURAL" in prompt)
+    except Exception as e:
+        check("verdict_proof.md (decomp) renders OK", False, str(e))
+
+    # -------------------------------------------------------
     # Test 4: Skill loading
     # -------------------------------------------------------
     print("\n=== Test 4: Skill loading ===")
@@ -317,6 +406,39 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
     check("max_proof_iterations set", "max_proof_iterations" in pipeline_cfg,
           "Missing max_proof_iterations in pipeline config")
     check("claude config present", "claude" in config, "Missing claude config")
+
+    # -------------------------------------------------------
+    # Test 6b: Decomposition mode config validation
+    # -------------------------------------------------------
+    prover_cfg = config.get("prover", {})
+    prover_mode = prover_cfg.get("mode", "simple")
+    check("prover.mode is valid", prover_mode in ("simple", "decomposition"),
+          f"Invalid prover.mode: {prover_mode}")
+
+    if prover_mode == "decomposition":
+        print("\n=== Test 6b: Decomposition config validation ===")
+        decomp_cfg = config.get("decomposition", {})
+        check("decomposition config present", bool(decomp_cfg),
+              "Missing decomposition config when prover.mode=decomposition")
+
+        # Validate model assignments
+        decomp_models = decomp_cfg.get("models", {})
+        valid_providers = {"claude", "codex", "gemini"}
+        required_agents = ["decomposer", "single_prover", "regulator",
+                          "structural_verifier", "detailed_verifier", "verdict"]
+        for agent in required_agents:
+            provider = decomp_models.get(agent, "claude")
+            is_valid = provider.lower() in valid_providers
+            check(f"decomposition.models.{agent} valid ({provider})",
+                  is_valid, f"Invalid provider '{provider}' for {agent}")
+
+        # Validate limits
+        max_proof = decomp_cfg.get("max_proof_attempts", 3)
+        max_rev = decomp_cfg.get("max_revisions", 2)
+        max_decomp = decomp_cfg.get("max_decompositions", 2)
+        check("max_proof_attempts > 0", max_proof > 0, f"Invalid: {max_proof}")
+        check("max_revisions > 0", max_rev > 0, f"Invalid: {max_rev}")
+        check("max_decompositions > 0", max_decomp > 0, f"Invalid: {max_decomp}")
 
     # -------------------------------------------------------
     # Test 7: Multi-model prompt (proof_select.md)
