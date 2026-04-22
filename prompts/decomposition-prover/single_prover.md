@@ -319,6 +319,19 @@ Before outputting, verify:
 
 ---
 
+## Scratchpad
+
+You have a personal scratchpad file for thinking out loud:
+```
+{scratchpad_file}
+```
+
+**Use it freely throughout your work.** Jot down ideas, failed attempts, intermediate calculations, intuition, questions, or anything that helps you think. Write to it early and often — before you start the proof, while you're stuck, after you try something. It does not need to be organized or polished. No one will judge its contents, and it is never read by any downstream agent or verifier.
+
+This is purely for your benefit (and for humans reviewing the run to understand your reasoning).
+
+---
+
 ## Temporary Files
 
 Save temporary files (scripts, scratch work) in:

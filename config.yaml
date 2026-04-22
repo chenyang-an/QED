@@ -12,7 +12,7 @@ claude:
   permission_mode: "bypassPermissions"
 
   # Choose ONE provider: "subscription", "bedrock", or "api_key"
-  provider: "subscription"
+  provider: "bedrock"
 
   # --- Option 1: Claude subscription (Pro/Max) ---
   # No API key needed. Model is a shorthand: "opus", "sonnet", "haiku"
@@ -49,7 +49,7 @@ gemini:
 # =============================================================================
 
 prover:
-  mode: "simple"  # "simple" (default) or "decomposition"
+  mode: "decomposition"  # "simple" (default) or "decomposition"
 
 # =============================================================================
 # PIPELINE SETTINGS
@@ -83,7 +83,7 @@ pipeline:
   # Cost scales with number of providers: 2 providers = 2x proof search cost, 3 = 3x.
   multi_model:
     enabled: true               # true = use providers below, false = Claude-only
-    providers: ["claude"]       # any subset of ["claude", "codex", "gemini"]
+    providers: ["codex"]       # any subset of ["claude", "codex", "gemini"]
 
   # Multi-model verification.
   # When enabled, each proof is independently verified by all listed providers.
@@ -92,19 +92,19 @@ pipeline:
   # Cost scales linearly: 2 verifiers = 2x verification cost, 3 = 3x.
   verification_agents:
     enabled: true               # true = use providers below, false = Claude-only
-    providers: ["claude"]       # any subset of ["claude", "codex", "gemini"]
+    providers: ["gemini"]       # any subset of ["claude", "codex", "gemini"]
 
   # Proof selection agent (only used when multi_model.enabled=true).
   # Picks the best proof when multiple models generate proofs in parallel.
   proof_select:
-    provider: "claude"          # claude, codex, or gemini
+    provider: "codex"          # claude, codex, or gemini
 
   # Brainstorm session: multiple models independently brainstorm proof strategies
   # before proof search each round. Results are shared with the proof search agent.
   # Skipped for easy problems. Cost scales with number of providers.
   brainstorm:
     enabled: false              # true = run brainstorm before proof search
-    providers: ["claude"]       # any subset of ["claude", "codex", "gemini"]
+    providers: ["codex"]       # any subset of ["claude", "codex", "gemini"]
 
 # =============================================================================
 # DECOMPOSITION MODE SETTINGS (only used when prover.mode = "decomposition")
@@ -112,7 +112,7 @@ pipeline:
 
 decomposition:
   # Retry limits
-  max_proof_attempts: 3    # REVISE_PROOF limit: proof attempts per revision
+  max_proof_attempts: 2    # REVISE_PROOF limit: proof attempts per revision
   max_revisions: 2         # REVISE_PLAN limit: total revisions per attempt (including original)
   max_decompositions: 2    # REWRITE limit: total decomposition attempts
 
@@ -123,4 +123,4 @@ decomposition:
     regulator: "codex"            # decides REVISE_PROOF/REVISE_PLAN/REWRITE after verification fails
     structural_verifier: "gemini" # structural verification of proof (Phases 1-5)
     detailed_verifier: "gemini"   # detailed verification of proof (Phase 6)
-    verdict: "gemini"             # final verdict on verification reports (DONE/CONTINUE)
+    verdict: "codex"             # final verdict on verification reports (DONE/CONTINUE)

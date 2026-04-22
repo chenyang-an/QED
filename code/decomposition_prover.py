@@ -891,6 +891,8 @@ async def run_single_prover(
         elif os.path.exists(structural_path):
             previous_verification_file = structural_path
 
+    scratchpad_file = os.path.join(proof_dir, "scratchpad.md")
+
     prompt = load_prompt(
         prompts_dir,
         "decomposition-prover/single_prover.md",
@@ -902,6 +904,7 @@ async def run_single_prover(
         previous_verification_file=previous_verification_file,
         output_file=output_file,
         output_dir=state.output_dir,
+        scratchpad_file=scratchpad_file,
     )
 
     if decomp_logger:

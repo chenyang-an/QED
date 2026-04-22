@@ -116,9 +116,9 @@ Use this EXACT format:
 
 ## Current State Summary
 
-- **Decomposition attempt**: {N} of {max_decompositions}
-- **Revision**: {R} of {max_revisions}
-- **Proof attempt**: {M} of {max_proof_attempts}
+- **Decomposition attempt**: {{N}} of {max_decompositions}
+- **Revision**: {{R}} of {max_revisions}
+- **Proof attempt**: {{M}} of {max_proof_attempts}
 
 ## Analysis
 
@@ -171,7 +171,7 @@ Use this EXACT format:
 
 ## Summary
 
-**Status**: FAILED after {N} decomposition attempts, {R} total revisions, {P} total proofs
+**Status**: FAILED after {{N}} decomposition attempts, {{R}} total revisions, {{P}} total proofs
 
 ## Attempt History
 

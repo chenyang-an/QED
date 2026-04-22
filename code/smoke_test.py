@@ -255,6 +255,7 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
             previous_verification_file="",
             output_file="/tmp/test_proof.md",
             output_dir="/tmp/test_output",
+            scratchpad_file="/tmp/test_output/scratchpad.md",
         )
         check("single_prover.md renders OK", "test_problem.tex" in prompt)
         check("single_prover.md has decomposition file", "test_decomposition.yaml" in prompt)

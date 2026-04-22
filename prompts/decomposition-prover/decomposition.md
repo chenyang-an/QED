@@ -36,9 +36,9 @@ Every intermediate step must be a **rigorous quantitative mathematical statement
 - "The sequence converges quickly"
 
 **GOOD (quantitative):**
-- "For all t > 0, E[e^{tX}] ≤ e^{t²σ²/2}"
+- "For all t > 0, E[e^{{tX}}] ≤ e^{{t²σ²/2}}"
 - "For all x > 1, f(x) ≤ C log(x) where C = 3.5"
-- "For all n ≥ 1, |a_n - L| ≤ 2^{-n}"
+- "For all n ≥ 1, |a_n - L| ≤ 2^{{-n}}"
 
 If your initial intuition is descriptive, you MUST refine it to an explicit quantitative form before including it in the decomposition.
 

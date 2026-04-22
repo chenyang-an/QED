@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 from datetime import datetime
 
 
@@ -128,91 +129,131 @@ async def run_claude_agent(
             env=env,
         )
 
+    MAX_RETRIES = 3
+    RETRY_BACKOFF = [30, 60, 120]  # seconds between retries
+
     start = datetime.now()
     if logger:
         logger.log(f"[Claude] Starting {call_name} (model={model})")
 
-    try:
-        result = await asyncio.get_event_loop().run_in_executor(None, _call)
-    except Exception as exc:
-        elapsed = (datetime.now() - start).total_seconds()
-        if logger:
-            logger.log(f"[Claude] EXCEPTION: {type(exc).__name__}: {exc}")
-        if tracker:
-            tracker.record(call_name or "claude", 0, 0, elapsed,
-                           provider="claude", model=model)
-        raise ModelRunnerError(
-            provider="claude",
-            error_type="subprocess_error",
-            message=f"Failed to execute Claude CLI: {type(exc).__name__}: {exc}",
-        )
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        attempt_start = datetime.now()
 
-    elapsed = (datetime.now() - start).total_seconds()
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(None, _call)
+        except Exception as exc:
+            elapsed = (datetime.now() - attempt_start).total_seconds()
+            if logger:
+                logger.log(f"[Claude] EXCEPTION (attempt {attempt}/{MAX_RETRIES}): "
+                           f"{type(exc).__name__}: {exc}")
+            last_error = ModelRunnerError(
+                provider="claude",
+                error_type="subprocess_error",
+                message=f"Failed to execute Claude CLI: {type(exc).__name__}: {exc}",
+            )
+            if attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF[attempt - 1]
+                if logger:
+                    logger.log(f"[Claude] Retrying in {wait}s...")
+                await asyncio.sleep(wait)
+                continue
+            if tracker:
+                tracker.record(call_name or "claude", 0, 0,
+                               (datetime.now() - start).total_seconds(),
+                               provider="claude", model=model)
+            raise last_error
 
-    # Log stderr if present (contains error messages from CLI)
-    if result.stderr and result.stderr.strip() and logger:
-        logger.log(f"[Claude] stderr:\n{result.stderr.strip()}")
+        elapsed = (datetime.now() - attempt_start).total_seconds()
 
-    # --- Parse JSON output ---
-    response = ""
-    input_tokens = 0
-    output_tokens = 0
-    json_parse_error = None
+        # Log stderr if present (contains error messages from CLI)
+        if result.stderr and result.stderr.strip() and logger:
+            logger.log(f"[Claude] stderr:\n{result.stderr.strip()}")
 
-    try:
-        data = json.loads(result.stdout)
-        response = data.get("result", "")
+        # --- Parse JSON output ---
+        response = ""
+        input_tokens = 0
+        output_tokens = 0
+        json_parse_error = None
 
-        for _, model_stats in data.get("modelUsage", {}).items():
-            input_tokens += model_stats.get("inputTokens", 0)
-            output_tokens += model_stats.get("outputTokens", 0)
-    except (json.JSONDecodeError, ValueError) as exc:
-        json_parse_error = str(exc)
-        if logger:
-            logger.log(f"[Claude] JSON parse error: {exc}")
-            if result.stdout.strip():
-                logger.log(f"[Claude] Raw stdout (first 1000 chars): {result.stdout.strip()[:1000]}")
-        response = result.stdout.strip()
+        try:
+            data = json.loads(result.stdout)
+            response = data.get("result", "")
 
-    # Check for non-zero exit code (indicates CLI failure)
-    if result.returncode != 0:
-        if logger:
-            logger.log(f"[Claude] Non-zero exit code: {result.returncode}")
-        if tracker:
-            tracker.record(call_name or "claude", input_tokens, output_tokens,
-                           elapsed, provider="claude", model=model)
-        raise ModelRunnerError(
-            provider="claude",
-            error_type="non_zero_exit",
-            message=f"Claude CLI exited with code {result.returncode}",
-            exit_code=result.returncode,
-            stderr=result.stderr,
-            stdout=result.stdout,
-        )
+            for _, model_stats in data.get("modelUsage", {}).items():
+                input_tokens += model_stats.get("inputTokens", 0)
+                output_tokens += model_stats.get("outputTokens", 0)
+        except (json.JSONDecodeError, ValueError) as exc:
+            json_parse_error = str(exc)
+            if logger:
+                logger.log(f"[Claude] JSON parse error: {exc}")
+                if result.stdout.strip():
+                    logger.log(f"[Claude] Raw stdout (first 1000 chars): {result.stdout.strip()[:1000]}")
+            response = result.stdout.strip()
 
-    # Check for empty response (might indicate silent failure)
-    if not response.strip():
-        if logger:
-            logger.log(f"[Claude] Empty response received")
-        if tracker:
-            tracker.record(call_name or "claude", input_tokens, output_tokens,
-                           elapsed, provider="claude", model=model)
-        raise ModelRunnerError(
-            provider="claude",
-            error_type="empty_response",
-            message="Claude returned empty response" + (f" (JSON parse error: {json_parse_error})" if json_parse_error else ""),
-            exit_code=result.returncode,
-            stderr=result.stderr,
-            stdout=result.stdout,
-        )
+        # Check for non-zero exit code (indicates CLI failure) — retryable
+        if result.returncode != 0:
+            if logger:
+                logger.log(f"[Claude] Non-zero exit code: {result.returncode} "
+                           f"(attempt {attempt}/{MAX_RETRIES})")
+            last_error = ModelRunnerError(
+                provider="claude",
+                error_type="non_zero_exit",
+                message=f"Claude CLI exited with code {result.returncode}",
+                exit_code=result.returncode,
+                stderr=result.stderr,
+                stdout=result.stdout,
+            )
+            if attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF[attempt - 1]
+                if logger:
+                    logger.log(f"[Claude] Retrying in {wait}s...")
+                await asyncio.sleep(wait)
+                continue
+            if tracker:
+                tracker.record(call_name or "claude", input_tokens, output_tokens,
+                               (datetime.now() - start).total_seconds(),
+                               provider="claude", model=model)
+            raise last_error
 
+        # Check for empty response (might indicate silent failure) — retryable
+        if not response.strip():
+            if logger:
+                logger.log(f"[Claude] Empty response received "
+                           f"(attempt {attempt}/{MAX_RETRIES})")
+            last_error = ModelRunnerError(
+                provider="claude",
+                error_type="empty_response",
+                message="Claude returned empty response" + (f" (JSON parse error: {json_parse_error})" if json_parse_error else ""),
+                exit_code=result.returncode,
+                stderr=result.stderr,
+                stdout=result.stdout,
+            )
+            if attempt < MAX_RETRIES:
+                wait = RETRY_BACKOFF[attempt - 1]
+                if logger:
+                    logger.log(f"[Claude] Retrying in {wait}s...")
+                await asyncio.sleep(wait)
+                continue
+            if tracker:
+                tracker.record(call_name or "claude", input_tokens, output_tokens,
+                               (datetime.now() - start).total_seconds(),
+                               provider="claude", model=model)
+            raise last_error
+
+        # Success — break out of retry loop
+        if attempt > 1 and logger:
+            logger.log(f"[Claude] Succeeded on attempt {attempt}")
+        break
+
+    total_elapsed = (datetime.now() - start).total_seconds()
     if logger:
-        logger.log(f"[Claude] Completed {call_name} in {elapsed:.0f}s "
+        logger.log(f"[Claude] Completed {call_name} in {total_elapsed:.0f}s "
                     f"({input_tokens} in / {output_tokens} out)")
 
     if tracker:
         tracker.record(call_name or "claude", input_tokens, output_tokens,
-                       elapsed, provider="claude", model=model)
+                       total_elapsed, provider="claude", model=model)
 
     return response
 
