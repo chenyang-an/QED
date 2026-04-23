@@ -2431,7 +2431,7 @@ async def main():
     print()
     print("=" * 60)
     if ok:
-        print("  PIPELINE COMPLETE — Proof verified!")
+        print("  PIPELINE COMPLETE")
     else:
         print("  PIPELINE STOPPED — Max iterations reached")
     print("=" * 60)
