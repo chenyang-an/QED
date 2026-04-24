@@ -517,131 +517,34 @@ This pipeline runs all model CLIs with permissions bypassed (`--dangerously-skip
 ### Simple Mode
 
 ```mermaid
-graph TD
-    subgraph INPUT[" "]
-        P["📄 problem.tex"]
-    end
-
-    subgraph STAGE0["Stage 0 — Literature Survey"]
-        LS["Survey Agent"]
-        RI[("related_info/<br/>difficulty + related work")]
-    end
-
-    subgraph LOOP["Stage 1 — Proof Search Loop (up to N rounds)"]
-        BS["Brainstorm<br/>(optional, parallel)"]
-
-        subgraph SEARCH["Proof Search (parallel)"]
-            S1["Provider 1"]
-            S2["Provider 2"]
-            S3["Provider ..."]
-        end
-
-        subgraph VERIFY["Verification (parallel, N proofs × M verifiers)"]
-            V1["Structural<br/>Phases 1-4"]
-            V2["Detailed<br/>Phase 5"]
-        end
-
-        SEL["Selector Agent<br/>(multi-model only)"]
-        VD{"Verdict"}
-    end
-
-    subgraph STAGE2["Stage 2"]
-        SUM["Summary Agent"]
-    end
-
-    subgraph OUTPUT[" "]
-        O1["📄 proof.md"]
-        O2["📄 proof_effort_summary.md"]
-    end
-
-    P --> LS
-    LS --> RI
-    RI --> BS
-    BS --> SEARCH
-    SEARCH --> VERIFY
-    VERIFY --> SEL
-    SEL --> VD
-    VD -- "CONTINUE<br/>(with feedback)" --> BS
-    VD -- "DONE" --> SUM
-    SUM --> O1
-    SUM --> O2
-
-    HH["👤 Human Guidance<br/>(optional, between rounds)"] -.-> BS
-
-    style INPUT fill:none,stroke:none
-    style OUTPUT fill:none,stroke:none
-    style STAGE0 fill:#1a1a2e,stroke:#16213e,color:#e0e0e0
-    style LOOP fill:#0f3460,stroke:#16213e,color:#e0e0e0
-    style SEARCH fill:#1a1a4e,stroke:#16213e,color:#e0e0e0
-    style VERIFY fill:#1a1a4e,stroke:#16213e,color:#e0e0e0
-    style STAGE2 fill:#1a1a2e,stroke:#16213e,color:#e0e0e0
-    style HH fill:#533483,stroke:#533483,color:#e0e0e0
+flowchart TD
+    P["problem.tex"] --> LS["Literature Survey"]
+    LS --> BS["Brainstorm (optional)"]
+    BS --> PS["Proof Search"]
+    PS --> V["Verification"]
+    V --> SEL["Selector (multi-model only)"]
+    SEL --> VD{"Verdict"}
+    VD -- DONE --> SUM["Summary"]
+    VD -- CONTINUE --> BS
+    SUM --> O["proof.md"]
 ```
 
 ### Decomposition Mode
 
 ```mermaid
-graph TD
-    subgraph INPUT[" "]
-        P["📄 problem.tex"]
-    end
-
-    subgraph STAGE0["Stage 0 — Literature Survey"]
-        LS["Survey Agent"]
-        RI[("related_info/<br/>difficulty + related work")]
-    end
-
-    subgraph LOOP["Stage 1 — Decomposition Prover"]
-        DC["Decomposer<br/>(CREATE / REVISE / REWRITE)"]
-        SP["Single Prover"]
-
-        subgraph VERIFY["Verification"]
-            SV["Structural Verifier<br/>Phases 1-5"]
-            SV_V{"Structural<br/>Verdict"}
-            DV["Detailed Verifier<br/>Phase 6"]
-            DV_V{"Final<br/>Verdict"}
-        end
-
-        REG["Regulator"]
-    end
-
-    subgraph STAGE2["Stage 2"]
-        SUM["Summary Agent"]
-    end
-
-    subgraph OUTPUT[" "]
-        O1["📄 proof.md"]
-        O2["📄 proof_effort_summary.md"]
-    end
-
-    P --> LS
-    LS --> RI
-    RI --> DC
-    DC -- "YAML proof plan" --> SP
-    SP -- "complete proof" --> SV
-    SV --> SV_V
-    SV_V -- "DONE" --> DV
-    SV_V -- "CONTINUE<br/>(skip detailed)" --> REG
-    DV --> DV_V
-    DV_V -- "DONE" --> SUM
-    DV_V -- "CONTINUE" --> REG
-    REG -- "REVISE_PROOF" --> SP
-    REG -- "REVISE_PLAN" --> DC
-    REG -- "REWRITE" --> DC
-    SUM --> O1
-    SUM --> O2
-
-    FA["📄 failure_analysis.md<br/>(when all retries exhausted)"] -.-> REG
-
-    HH["👤 Human Guidance<br/>(optional)"] -.-> DC
-
-    style INPUT fill:none,stroke:none
-    style OUTPUT fill:none,stroke:none
-    style STAGE0 fill:#1a1a2e,stroke:#16213e,color:#e0e0e0
-    style LOOP fill:#0f3460,stroke:#16213e,color:#e0e0e0
-    style VERIFY fill:#1a1a4e,stroke:#16213e,color:#e0e0e0
-    style STAGE2 fill:#1a1a2e,stroke:#16213e,color:#e0e0e0
-    style REG fill:#e94560,stroke:#e94560,color:#ffffff
-    style HH fill:#533483,stroke:#533483,color:#e0e0e0
-    style FA fill:none,stroke:#e94560,color:#e94560
+flowchart TD
+    P["problem.tex"] --> LS["Literature Survey"]
+    LS --> DC["Decomposer"]
+    DC --> SP["Single Prover"]
+    SP --> SV["Structural Verifier"]
+    SV --> V1{"Verdict"}
+    V1 -- DONE --> DV["Detailed Verifier"]
+    V1 -- CONTINUE --> REG["Regulator"]
+    DV --> V2{"Verdict"}
+    V2 -- DONE --> SUM["Summary"]
+    V2 -- CONTINUE --> REG
+    REG -- REVISE_PROOF --> SP
+    REG -- REVISE_PLAN --> DC
+    REG -- REWRITE --> DC
+    SUM --> O["proof.md"]
 ```
