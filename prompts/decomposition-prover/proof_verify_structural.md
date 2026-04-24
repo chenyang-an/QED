@@ -4,7 +4,7 @@
 
 ## Overview
 
-You are a mathematical logic reviewer tasked with performing the **structural verification** of an aggregated proof produced by a decomposition-based prover. This proof was assembled from individually-proved steps — your job is to verify the **final aggregated proof as a whole**, checking that the assembly is correct and the proof is structurally sound.
+You are a mathematical logic reviewer tasked with performing the **structural verification** of an aggregated proof produced by a decomposition-based prover of an open research question. Your job is to verify the **final aggregated proof as a whole**, checking that the assembly is correct and the proof is structurally sound.
 
 This covers five phases: Problem-Statement Integrity, Completeness and Originality Check, Citation Verification, Decomposition Plan Adherence, and Additional Verification Rules. These are the foundational checks — if the proof fails any of these, detailed step-by-step verification will not be attempted.
 
@@ -50,7 +50,7 @@ The aggregation process may — intentionally or accidentally — alter, weaken,
 
 ### Phase 2: Completeness and Originality Check
 
-#### 2a. Check that all questions are addressed
+#### 2a. Check that all questions are addressed in the problem, which is open research problem.
 
 1. **Identify all questions/tasks in the problem.** Read `{problem_file}` carefully and extract every distinct question, claim to prove, or task.
 2. **Check each question against the proof.** For every question/task identified:
