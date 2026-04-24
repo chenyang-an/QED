@@ -2,6 +2,9 @@
 # QED Pipeline Configuration
 # =============================================================================
 
+
+
+
 # =============================================================================
 # MODEL PROVIDERS (used by both simple and decomposition modes)
 # =============================================================================
@@ -44,12 +47,18 @@ gemini:
   thinking_level: "HIGH"  # Gemini 3 thinking strength; for Gemini 2.5 use thinking_budget instead
   api_key: ""  # paste your Google Gemini API key here, leave empty if Gemini CLI is already logged in with subscription
 
+
+
+
 # =============================================================================
 # PROVER MODE SELECTION
 # =============================================================================
 
 prover:
-  mode: "decomposition"  # "simple" (default) or "decomposition"
+  mode: "simple"  # "simple" (default) or "decomposition"
+
+
+
 
 # =============================================================================
 # PIPELINE SETTINGS
@@ -110,6 +119,9 @@ pipeline:
   brainstorm:
     enabled: false              # true = run brainstorm before proof search
     providers: ["codex"]       # any subset of ["claude", "codex", "gemini"]
+
+
+
 
 # =============================================================================
 # DECOMPOSITION MODE SETTINGS (only used when prover.mode = "decomposition")
