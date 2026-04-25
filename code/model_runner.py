@@ -281,7 +281,7 @@ async def run_codex_agent(
         call_name: Human-readable label for this call.
     """
     cli_path = codex_config.get("cli_path", "codex")
-    model = codex_config.get("model", "gpt-5.4")
+    model = codex_config.get("model", "gpt-5.5")
     reasoning = codex_config.get("reasoning_effort", "xhigh")
 
     cmd = [
