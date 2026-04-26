@@ -113,7 +113,13 @@ bash run_verifier.sh
 bash run_verifier.sh problem.txt --problem-only
 ```
 
-The report is written to `standalone_verifier_result/report.md`.
+Reports are written to `standalone_verifier_result/`:
+
+| File | When |
+|------|------|
+| `report.md` | Always — combined final report |
+| `structural_report.md` | Hard problems — structural verifier's raw output |
+| `detailed_report.md` | Hard problems, structural PASS — detailed verifier's raw output |
 
 ### Options
 
