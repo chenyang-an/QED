@@ -86,6 +86,42 @@ See the [full expert comments](proved_statements/analysis-Apr-24-2026/README.md#
 </details>
 
 
+## Standalone Proof Verifier
+
+A standalone tool that verifies a proof against a problem statement — no proof search, just verification. It uses a difficulty-adaptive architecture: a judge agent classifies the problem as Easy or Hard, then routes accordingly.
+
+- **Easy problems:** A single agent performs a streamlined verification and returns a verdict.
+- **Hard problems:** Two specialized agents run in sequence — structural verification (alignment, completeness, architecture) followed by detailed verification (step-by-step logic, correctness, rigor, coverage). If structural verification fails, detailed verification is skipped.
+
+Supports Claude, Codex, and Gemini. Provider settings are in the `standalone_verifier` section of `config.yaml`.
+
+### Quick Start
+
+1. Place your problem statement in `standalone_verifier/problem.txt`.
+2. Place the proof in `standalone_verifier/proof.txt`.
+3. Run:
+
+```bash
+bash run_verifier.sh
+```
+
+The report is written to `standalone_verifier_result/report.md`.
+
+### Options
+
+```bash
+# Custom input files
+bash run_verifier.sh path/to/problem.txt path/to/proof.txt
+
+# Override provider for all agents
+bash run_verifier.sh --provider gemini
+
+# Override model
+bash run_verifier.sh --model sonnet
+```
+
+---
+
 ## How It Works
 
 QED takes a LaTeX problem statement, orchestrates multiple LLMs to search for a proof, verifies the proof through multi-phase checking, and iterates until the proof passes or a round limit is reached. The final output is a rigorous natural-language proof with citations and a summary of the entire proof effort.

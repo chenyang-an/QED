@@ -141,3 +141,13 @@ decomposition:
     structural_verifier: "gemini" # structural verification of proof (Phases 1-5)
     detailed_verifier: "gemini"   # detailed verification of proof (Phase 6)
     verdict: "codex"             # final verdict on verification reports (DONE/CONTINUE)
+
+
+# =============================================================================
+# STANDALONE VERIFIER (used by verify/verify_proof.py)
+# =============================================================================
+
+standalone_verifier:
+  judge: "codex"                  # claude, codex, or gemini
+  structural_verifier: "codex"    # claude, codex, or gemini
+  detailed_verifier: "codex"      # claude, codex, or gemini
