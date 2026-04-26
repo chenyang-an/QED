@@ -6,8 +6,8 @@ There are four problems in this folder. All four problems are open research prob
 
 - **Prover mode:** Simple (not decomposition)
 - **Literature survey:** Codex
-- **Prover:** Codex
-- **Verifiers:** Gemini
+- **Prover:** Codex, gpt-5.4
+- **Verifiers:** Gemini, gemini-3.1-pro
 - **Brainstorm:** Disabled
 - **Max iterations:** 9
 

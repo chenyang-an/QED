@@ -149,8 +149,9 @@ The proof should declare its architecture as a tree of `<subgoal>` nodes rooted 
    - **`type: condition`**: Does the cited result actually require this condition? Is the condition stated correctly (matching the cited result's exact hypothesis)? Cross-reference with citation verdicts from Phase 3.
 4. **Cross-reference conditions with citations.** For every `<cite>` block in the proof, check: does the cited result have conditions/hypotheses? If so, are there corresponding `type: condition` subgoals for each hypothesis? **Missing condition subgoals are a FAIL** — the prover applied a result without checking its conditions. Also check results applied without formal `<cite>` tags (e.g., "by compactness," "by the implicit function theorem") — if the result has nontrivial conditions, flag missing condition subgoals.
 5. **Check tree completeness.** Do the subgoals cover the entire proof's logical architecture? If the proof has multiple logical stages but only one subgoal (or none), the prover may be hiding the structure. Flag any major logical transition that lacks a corresponding subgoal.
+6. **Check heuristics on key original steps.** For every `<key-original-step>` block in the proof, check whether it is followed by a `<heuristics>` tag. The prover should write heuristics after each key original step explaining why that step is mathematically correct. Flag any `<key-original-step>` that lacks a corresponding `<heuristics>` tag.
 
-**Note:** This phase checks whether the tree STRUCTURE is valid — whether the reductions are sound and the architecture is complete. It does NOT check whether individual subgoals are actually proved (that happens in the detailed verification stage).
+**Note:** This phase checks whether the tree STRUCTURE is valid — whether the reductions are sound, the architecture is complete, and key original steps have heuristics. It does NOT check whether individual subgoals are actually proved (that happens in the detailed verification stage).
 
 **Phase 4 overall:** PASS if tree well-formed, all reductions valid, and no missing subgoals. FAIL otherwise.
 
@@ -317,7 +318,16 @@ Write ALL verification results to:
 **Missing reduction subgoals:** [list any major proof transitions without corresponding subgoal, or "None"]
 **Missing condition subgoals:** [list any cited results with unchecked conditions, or "None"]
 
-**Phase 4 overall:** [PASS / FAIL — FAIL if tree malformed, invalid reductions, or missing subgoals]
+**Key original step heuristics:**
+
+| # | Key Original Step (brief) | Has `<heuristics>` tag | Issues |
+|---|---------------------------|------------------------|--------|
+| 1 | [brief description] | [YES/NO] | [issues or "None"] |
+| ... | ... | ... | ... |
+
+**All key original steps have heuristics:** [YES / NO]
+
+**Phase 4 overall:** [PASS / FAIL — FAIL if tree malformed, invalid reductions, missing subgoals, or missing heuristics on key original steps]
 
 ---
 

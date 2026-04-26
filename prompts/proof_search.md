@@ -40,7 +40,7 @@ A proof is ONLY valuable if it tackles the hardest part head-on. The hard part i
 
 **What you SHOULD do instead:**
 
-- ✅ Identify the hardest step in the proof and spend MOST of your effort there.
+- ✅ Identify the hardest step in the proof and spend MOST of your effort there. Write heuristics after key step proof explaining why this step is true, so that you and human reader both understand this step better.
 - ✅ When you hit a wall, try harder before trying something else. Sit with the difficulty. Break the hard step into sub-steps. Use computational tools to explore.
 - ✅ **When you are truly stuck and don't know what to do next, search online.** Use web search to look for the specific technique, lemma, or type of problem you are struggling with. Search Math StackExchange, MathOverflow, ArXiv, Wikipedia, or other mathematical resources. A targeted search like "bound for sum of divisors using convexity" or "induction on tree depth for graph coloring" can unlock an approach you hadn't considered. Do NOT spin your wheels in silence — actively seek external knowledge when you are blocked.
 - ✅ If a step is hard to prove, that means it NEEDS a careful proof — not a hand-wave.
@@ -212,12 +212,12 @@ The proof should focus on the genuinely problem-specific and nontrivial parts of
 
 Every proof has steps that are original, nontrivial, and problem-specific — the steps where the real intellectual work happens. These are distinct from routine steps (setting up notation, applying standard definitions) and cited results (covered by `<cite>` tags).
 
-**You must wrap every such step with `<key-original-step>` tags:**
+**You must wrap every such step with `<key-original-step>` tags, and write heuristics after key step proof explaining why this step is true, so that you and human reader both understand this step better:**
 
 ```
 <key-original-step>
 [The complete, detailed argument for this nontrivial original step]
-</key-original-step>
+</key-original-step><heuristics>[Explanation why this step is mathematically correct]</heuristics>
 ```
 
 ### What qualifies as a key original step
@@ -424,6 +424,10 @@ Write the proof in Markdown format with the following structure:
 
 ## Proof
 (Your complete proof here. Use LaTeX math notation where appropriate: $...$, $$...$$)
+(Wrap key original steps with <key-original-step> tags followed by <heuristics> tags:)
+<key-original-step>
+[detailed rigorous argument for this key step]
+</key-original-step><heuristics>[Explanation why this step is mathematically correct]</heuristics>
 
 ## Key Ideas
 (Brief summary of the main proof strategy and key insights)

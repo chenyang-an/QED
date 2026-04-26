@@ -34,7 +34,7 @@ A proof is ONLY valuable if it tackles the hardest part head-on. The hard part i
 
 **What you SHOULD do instead:**
 
-- Identify the hardest step in the proof (marked as `is_key_step: true` in the decomposition) and spend MOST of your effort there.
+- Identify the hardest step in the proof (marked as `is_key_step: true` in the decomposition) and spend MOST of your effort there. Write heuristics after key step proof explaining why this step is true, so that you and human reader both understand this step better.
 - When you hit a wall, try harder before trying something else. Break the hard step into sub-steps. Use computational tools to explore.
 - If a step is hard to prove, that means it NEEDS a careful proof — not a hand-wave.
 - Write out every epsilon, every bound, every case. Be painfully explicit.
@@ -214,12 +214,13 @@ Key steps require extra rigor. Wrap the core argument in `<key-original-step>` t
 
 ## Key Original Step Tag
 
-Use `<key-original-step>` tags to mark nontrivial original work:
+Use `<key-original-step>` tags to mark nontrivial original work, write heuristics after key step proof explaining why this step is true, so that you and human reader both understand this step better.
 
 ```
 <key-original-step>
 [The complete, detailed argument for this nontrivial original step]
-</key-original-step>
+</key-original-step><heuristics>[Explanation why this step is mathematically correct]</heuristics>
+
 ```
 
 ### What qualifies:
@@ -272,7 +273,7 @@ Use this structure:
 **Proof:**
 <key-original-step>
 [detailed rigorous argument for this key step]
-</key-original-step>
+</key-original-step><heuristics>[Explanation why this step is mathematically correct]</heuristics>
 
 **Dependencies:** [STEP1, S1, ...]
 
@@ -311,7 +312,7 @@ Before outputting, verify:
 - [ ] Every step from decomposition plan is addressed with proper `### STEP_ID:` headers
 - [ ] Steps follow the `proof_order` from decomposition
 - [ ] Each step has explicit **Claim**, **Proof**, and **Dependencies**
-- [ ] Key steps (`is_key_step: true`) wrapped in `<key-original-step>` tags
+- [ ] Key steps (`is_key_step: true`) wrapped in `<key-original-step>` tags, heuristics are there.
 - [ ] All external results properly cited with `<cite>` tags
 - [ ] No hand-waving ("clearly", "obviously") without justification
 - [ ] Computational checks performed where applicable

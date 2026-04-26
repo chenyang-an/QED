@@ -62,6 +62,8 @@ Identify which steps are **key steps** — the most novel and difficult parts of
 
 The prover will give extra attention to key steps, so identifying them correctly is crucial.
 
+After you identify them, make sure you provide heuristics for each key step why this could possibly work. You should do this because this helps human reader and yourself to understand the proof plan.
+
 ### 4. Source Nodes
 
 Every decomposition must begin with **source nodes** — these are known results from the literature survey that you will build upon. Each source must have a proper citation that the prover can use in the final proof.
@@ -152,6 +154,8 @@ steps:
       [Explanation of the novel insight required]
     strategy_hint: |
       [Optional: approach suggestion for this challenging step]
+    hueristics: |
+      [Why this key_step could possibly work]
 
   # Add more steps as needed (typically 2-10 steps)
 

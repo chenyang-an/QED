@@ -145,6 +145,7 @@ For each key step (`is_key_step: true`):
 1. **Is it addressed with sufficient rigor?** — Key steps should have detailed arguments
 2. **Is it wrapped in `<key-original-step>` tags?** — The prover should mark key original work
 3. **Is there hand-waving?** — Key steps should NOT have "clearly", "obviously" without justification
+4. **Is heuristics there wrapped in `<heuristics>` tags?**— The prover should write heuristics after each key step
 
 #### 4d. Check for undeclared deviations
 
@@ -305,9 +306,9 @@ Write ALL verification results to:
 
 ### 4b. Step Format and Coverage
 
-| Step ID | Header Found | Claim Stated | Proof Present | Dependencies Listed | Is Key Step | Issues |
-|---------|--------------|--------------|---------------|---------------------|-------------|--------|
-| STEP1   | [YES/NO]     | [YES/NO]     | [YES/NO]      | [YES/NO]            | [YES/NO]    | [issues or "None"] |
+| Step ID | Header Found | Claim Stated | Proof Present | Dependencies Listed | Is Key Step | heuristics given | Issues |
+|---------|--------------|--------------|---------------|---------------------|-------------|------------------|--------|
+| STEP1   | [YES/NO]     | [YES/NO]     | [YES/NO]      | [YES/NO]            | [YES/NO]    | [YES/NO]         |[issues or "None"] |
 
 **All steps properly formatted:** [YES / NO]
 **All steps addressed:** [YES / NO]
