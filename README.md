@@ -88,14 +88,16 @@ See the [full expert comments](proved_statements/analysis-Apr-24-2026/README.md#
 
 ## Standalone Proof Verifier
 
-A standalone tool that verifies a proof against a problem statement — no proof search, just verification. It uses a difficulty-adaptive architecture: a judge agent classifies the problem as Easy or Hard, then routes accordingly.
+A standalone tool for checking mathematical proofs or problem statements. Two modes:
 
-- **Easy problems:** A single agent performs a streamlined verification and returns a verdict.
-- **Hard problems:** Two specialized agents run in sequence — structural verification (alignment, completeness, architecture) followed by detailed verification (step-by-step logic, correctness, rigor, coverage). If structural verification fails, detailed verification is skipped.
+- **Verify a proof** (default): Takes a problem + proof pair, classifies difficulty as Easy or Hard, then routes through a 1-agent (Easy) or 3-agent (Hard) verification pipeline. Hard problems go through structural verification first, then detailed verification only if structural passes.
+- **Review a problem** (`--problem-only`): Takes just a problem statement and checks whether it is well-defined — reports on clarity, consistency, completeness, and soundness.
 
 Supports Claude, Codex, and Gemini. Provider settings are in the `standalone_verifier` section of `config.yaml`.
 
 ### Quick Start
+
+**Verify a proof:**
 
 1. Place your problem statement in `standalone_verifier/problem.txt`.
 2. Place the proof in `standalone_verifier/proof.txt`.
@@ -105,19 +107,28 @@ Supports Claude, Codex, and Gemini. Provider settings are in the `standalone_ver
 bash run_verifier.sh
 ```
 
+**Review a problem statement only:**
+
+```bash
+bash run_verifier.sh problem.txt --problem-only
+```
+
 The report is written to `standalone_verifier_result/report.md`.
 
 ### Options
 
 ```bash
 # Custom input files
-bash run_verifier.sh path/to/problem.txt path/to/proof.txt
+bash run_verifier.sh problem.txt proof.txt
+
+# Problem-only review (no proof needed)
+bash run_verifier.sh problem.txt --problem-only
 
 # Override provider for all agents
-bash run_verifier.sh --provider gemini
+bash run_verifier.sh problem.txt proof.txt --provider gemini
 
 # Override model
-bash run_verifier.sh --model sonnet
+bash run_verifier.sh problem.txt proof.txt --model sonnet
 ```
 
 ---

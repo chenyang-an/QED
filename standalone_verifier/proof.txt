@@ -1,0 +1,11 @@
+We prove that $\liminf_{t \to \infty} \Lambda(t) > 0$.
+
+Since $U(t,y)$ is a shear flow depending only on $y$ and $t$, we can decompose $\rho$ into Fourier modes in $x$. For each $k \neq 0$, let $\hat{\rho}_k(t,y)$ denote the $k$-th Fourier mode. Then each mode satisfies
+$$\partial_t \hat{\rho}_k + ikU(t,y)\hat{\rho}_k = (\partial_y^2 - k^2)\hat{\rho}_k.$$
+
+By the Poincaré inequality on $\mathbb{T}^2$, we have
+$$\|\rho(t)\|_{\dot{H}^{-1}} \geq C \|\rho(t)\|_{L^2}$$
+for some universal constant $C > 0$ depending only on the domain. This immediately gives $\Lambda(t) \geq C > 0$ for all $t$, and therefore
+$$\liminf_{t \to \infty} \Lambda(t) \geq C > 0.$$
+
+QED.

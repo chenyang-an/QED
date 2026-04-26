@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Standalone proof verifier — difficulty-adaptive verification pipeline.
 
-Takes a problem file and a proof file, classifies difficulty, then routes
-through a 1-agent (Easy) or 3-agent (Hard) verification pipeline.
+Two modes:
+  - Problem + Proof: classifies difficulty, then routes through a 1-agent
+    (Easy) or 3-agent (Hard) verification pipeline.
+  - Problem only: reviews the problem statement for well-definedness and
+    defects (no proof needed).
 
 Usage:
-    python verify/verify_proof.py problem.txt proof.txt
-    python verify/verify_proof.py problem.txt proof.txt -o report.md
-    python verify/verify_proof.py problem.txt proof.txt --provider gemini
-    python verify/verify_proof.py problem.txt proof.txt --model sonnet
-    python verify/verify_proof.py problem.txt proof.txt --config /path/to/config.yaml
+    python verify/verify.py problem.txt proof.txt
+    python verify/verify.py problem.txt --problem-only         # problem-only mode
+    python verify/verify.py problem.txt proof.txt -o report.md
+    python verify/verify.py problem.txt proof.txt --provider gemini
+    python verify/verify.py problem.txt proof.txt --model sonnet
+    python verify/verify.py problem.txt proof.txt --config /path/to/config.yaml
 """
 from __future__ import annotations
 
@@ -35,6 +39,7 @@ DEFAULT_CONFIG = os.path.join(REPO_ROOT, "config.yaml")
 PROMPT_JUDGE = os.path.join(SCRIPT_DIR, "prompt_judge.md")
 PROMPT_STRUCTURAL = os.path.join(SCRIPT_DIR, "prompt_verify_structural.md")
 PROMPT_DETAILED = os.path.join(SCRIPT_DIR, "prompt_verify_detailed.md")
+PROMPT_CHECK_PROBLEM = os.path.join(SCRIPT_DIR, "prompt_check_problem.md")
 
 
 # ---------------------------------------------------------------------------
@@ -367,45 +372,55 @@ def assemble_report(difficulty: str, judge_output: str,
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Standalone proof verifier — "
-                    "difficulty-adaptive verification pipeline.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
-    )
-    parser.add_argument("problem", help="Path to problem statement file")
-    parser.add_argument("proof", help="Path to proof file")
-    parser.add_argument("-o", "--output", default=None,
-                        help="Write report to file (default: stdout)")
-    parser.add_argument("--provider", default=None,
-                        choices=["claude", "codex", "gemini"],
-                        help="Override all agents to one provider")
-    parser.add_argument("-m", "--model", default=None,
-                        help="Override model name for all agents")
-    parser.add_argument("-c", "--config", default=DEFAULT_CONFIG,
-                        help="Path to config.yaml "
-                             f"(default: {DEFAULT_CONFIG})")
+def write_report(report: str, output_path: str | None):
+    """Write report to file or stdout."""
+    if output_path:
+        with open(output_path, "w") as f:
+            f.write(report)
+        print(f"Report written to {output_path}", file=sys.stderr)
+    else:
+        print(report)
 
-    args = parser.parse_args()
 
-    # --- Load inputs ---
+def run_problem_only(args):
+    """Problem-only mode: review the problem statement for defects."""
     if not os.path.isfile(args.problem):
         print(f"Error: problem file not found: {args.problem}", file=sys.stderr)
         sys.exit(1)
-    if not os.path.isfile(args.proof):
-        print(f"Error: proof file not found: {args.proof}", file=sys.stderr)
-        sys.exit(1)
-    if not os.path.isfile(args.config):
-        print(f"Error: config file not found: {args.config}", file=sys.stderr)
-        sys.exit(1)
 
+    with open(args.problem) as f:
+        problem_text = f.read()
+
+    config = load_config(args.config)
+
+    provider, model = resolve_provider_and_model(
+        config, "problem_reviewer", args.provider, args.model)
+
+    print(f"[Problem Review] Checking problem statement ({provider})",
+          file=sys.stderr)
+    prompt = load_prompt(PROMPT_CHECK_PROBLEM, problem=problem_text)
+    report = run_model(provider, prompt, config, model)
+
+    print(f"[Problem Review] Done", file=sys.stderr)
+    write_report(report, args.output)
+
+
+def output_dir_from_args(args) -> str | None:
+    """Derive the output directory from -o path. Returns None if no -o."""
+    if args.output is None:
+        return None
+    return os.path.dirname(args.output) or "."
+
+
+def run_verification(args):
+    """Full verification mode: problem + proof."""
     with open(args.problem) as f:
         problem_text = f.read()
     with open(args.proof) as f:
         proof_text = f.read()
 
     config = load_config(args.config)
+    out_dir = output_dir_from_args(args)
 
     # --- Agent 1: Difficulty Judge ---
     judge_provider, judge_model = resolve_provider_and_model(
@@ -422,12 +437,7 @@ def main():
     # --- Easy path: done ---
     if difficulty == "Easy":
         report = assemble_report("Easy", judge_output)
-        if args.output:
-            with open(args.output, "w") as f:
-                f.write(report)
-            print(f"Report written to {args.output}", file=sys.stderr)
-        else:
-            print(report)
+        write_report(report, args.output)
         return
 
     # --- Hard path: Agent 2 (structural) ---
@@ -440,6 +450,11 @@ def main():
     structural_output = run_model(struct_provider, struct_prompt,
                                   config, struct_model)
 
+    # Write structural report to its own file
+    if out_dir:
+        write_report(structural_output,
+                     os.path.join(out_dir, "structural_report.md"))
+
     structural_verdict = parse_structural_verdict(structural_output)
     print(f"[Agent 2] Structural Verdict: {structural_verdict}", file=sys.stderr)
 
@@ -447,12 +462,7 @@ def main():
     if structural_verdict == "FAIL":
         report = assemble_report("Hard", judge_output,
                                  structural_output, structural_verdict)
-        if args.output:
-            with open(args.output, "w") as f:
-                f.write(report)
-            print(f"Report written to {args.output}", file=sys.stderr)
-        else:
-            print(report)
+        write_report(report, args.output)
         return
 
     # --- Hard path: Agent 3 (detailed) ---
@@ -468,17 +478,63 @@ def main():
 
     print(f"[Agent 3] Done", file=sys.stderr)
 
-    # --- Assemble final report ---
+    # Write detailed report to its own file
+    if out_dir:
+        write_report(detailed_output,
+                     os.path.join(out_dir, "detailed_report.md"))
+
+    # --- Assemble combined report ---
     report = assemble_report("Hard", judge_output,
                              structural_output, structural_verdict,
                              detailed_output)
+    write_report(report, args.output)
 
-    if args.output:
-        with open(args.output, "w") as f:
-            f.write(report)
-        print(f"Report written to {args.output}", file=sys.stderr)
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Standalone proof verifier — "
+                    "difficulty-adaptive verification pipeline.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument("problem", help="Path to problem statement file")
+    parser.add_argument("proof", nargs="?", default=None,
+                        help="Path to proof file")
+    parser.add_argument("--problem-only", action="store_true",
+                        help="Review problem statement only (no proof needed)")
+    parser.add_argument("-o", "--output", default=None,
+                        help="Write report to file (default: stdout)")
+    parser.add_argument("--provider", default=None,
+                        choices=["claude", "codex", "gemini"],
+                        help="Override all agents to one provider")
+    parser.add_argument("-m", "--model", default=None,
+                        help="Override model name for all agents")
+    parser.add_argument("-c", "--config", default=DEFAULT_CONFIG,
+                        help="Path to config.yaml "
+                             f"(default: {DEFAULT_CONFIG})")
+
+    args = parser.parse_args()
+
+    # --- Validate common inputs ---
+    if not os.path.isfile(args.problem):
+        print(f"Error: problem file not found: {args.problem}", file=sys.stderr)
+        sys.exit(1)
+    if not os.path.isfile(args.config):
+        print(f"Error: config file not found: {args.config}", file=sys.stderr)
+        sys.exit(1)
+
+    # --- Route to the appropriate mode ---
+    if args.problem_only:
+        run_problem_only(args)
     else:
-        print(report)
+        if args.proof is None:
+            print("Error: proof file is required (or use --problem-only)",
+                  file=sys.stderr)
+            sys.exit(1)
+        if not os.path.isfile(args.proof):
+            print(f"Error: proof file not found: {args.proof}", file=sys.stderr)
+            sys.exit(1)
+        run_verification(args)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,10 @@
+Consider the advection-diffusion equation on $\mathbb{T}^2 = [-\pi,\pi]^2$:
+$$\partial_t \rho + U(t,y)\,\partial_x \rho = \Delta \rho,$$
+where $U \in L^\infty_t L^2_y(\mathbb{T})$ is a shear flow and $\rho(0,\cdot) \in L^2(\mathbb{T}^2)$ is mean-zero and nonzero.
+
+Define the mixing scale ratio
+$$\Lambda(t) = \frac{\|\rho(t)\|_{\dot{H}^{-1}(\mathbb{T}^2)}}{\|\rho(t)\|_{L^2(\mathbb{T}^2)}}.$$
+
+Prove that
+$$\liminf_{t \to \infty} \Lambda(t) > 0,$$
+i.e., the $\dot{H}^{-1}$ norm cannot decay faster than the $L^2$ norm — the Batchelor scale persists.

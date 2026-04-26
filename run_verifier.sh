@@ -3,11 +3,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-PROBLEM="${1:-$SCRIPT_DIR/standalone_verifier/problem.txt}"
-PROOF="${2:-$SCRIPT_DIR/standalone_verifier/proof.txt}"
-shift 2 2>/dev/null || true
-
 OUTPUT_DIR="$SCRIPT_DIR/standalone_verifier_result"
 mkdir -p "$OUTPUT_DIR"
 
-python3 "$SCRIPT_DIR/verify/verify_proof.py" "$PROBLEM" "$PROOF" -o "$OUTPUT_DIR/report.md" "$@"
+if [ $# -eq 0 ]; then
+    # No arguments: default problem + proof from standalone_verifier/
+    python3 "$SCRIPT_DIR/verify/verify.py" \
+        "$SCRIPT_DIR/standalone_verifier/problem.txt" \
+        "$SCRIPT_DIR/standalone_verifier/proof.txt" \
+        -o "$OUTPUT_DIR/report.md"
+else
+    # Pass all arguments through; argparse handles the rest
+    python3 "$SCRIPT_DIR/verify/verify.py" \
+        "$@" \
+        -o "$OUTPUT_DIR/report.md"
+fi

@@ -144,10 +144,11 @@ decomposition:
 
 
 # =============================================================================
-# STANDALONE VERIFIER (used by verify/verify_proof.py)
+# STANDALONE VERIFIER (used by verify/verify.py)
 # =============================================================================
 
 standalone_verifier:
   judge: "codex"                  # claude, codex, or gemini
   structural_verifier: "codex"    # claude, codex, or gemini
   detailed_verifier: "codex"      # claude, codex, or gemini
+  problem_reviewer: "codex"       # claude, codex, or gemini (--problem-only mode)
