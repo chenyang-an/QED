@@ -2183,6 +2183,7 @@ async def main():
     pipeline_cfg = config.get("pipeline", {})
     claude_cfg = config.get("claude", {})
     max_proof = int(pipeline_cfg.get("max_proof_iterations", 9))
+    prover_mode = config.get("prover", {}).get("mode", "simple")
 
     problem_file = os.path.abspath(args.input)
     output_dir = os.path.abspath(args.output)
@@ -2251,7 +2252,14 @@ async def main():
     print("=" * 60)
     print(f"  Problem:    {problem_file}")
     print(f"  Output:     {output_dir}")
-    print(f"  Max rounds: {max_proof}")
+    print(f"  Mode:       {prover_mode}")
+    if prover_mode == "decomposition":
+        decomp_cfg = config.get("decomposition", {})
+        print(f"  Max proof attempts:    {decomp_cfg.get('max_proof_attempts', 2)}")
+        print(f"  Max revisions:         {decomp_cfg.get('max_revisions', 2)}")
+        print(f"  Max decompositions:    {decomp_cfg.get('max_decompositions', 2)}")
+    else:
+        print(f"  Max rounds: {max_proof}")
     print(f"  Token log:  {tracker.md_path}")
     if skip_survey or start_round > 1 or resume_from_step != "proof_search":
         print()
@@ -2327,7 +2335,6 @@ async def main():
     # -------------------------------------------------------
     # Stage 1: Proof Search Loop
     # -------------------------------------------------------
-    prover_mode = config.get("prover", {}).get("mode", "simple")
 
     print("=" * 60)
     if prover_mode == "decomposition":
