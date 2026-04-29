@@ -60,6 +60,7 @@ The proof search agent may — intentionally or accidentally — alter, weaken, 
    - Deferred with phrases like "this is left as an exercise" or "this follows similarly"
 
    Then this is a **FAIL**. The proof must provide explicit answers to ALL questions in the problem.
+4. **Identify if there is any step that the proof acknowledges that it fails to prove.** The proof will be published if verifier passed it. Therefore, there cannot be any hole in the proof, even the proof openly acknowledges the hole.
 
 #### 2b. Check for genuine proof work (not just resource gathering)
 

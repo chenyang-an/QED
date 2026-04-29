@@ -58,6 +58,7 @@ The aggregation process may — intentionally or accidentally — alter, weaken,
    - Is there a clear section, statement, or argument dedicated to answering it?
    - If the problem has multiple parts, are ALL parts addressed?
 3. **Flag any unaddressed questions.**
+4. **Identify if there is any step that the proof acknowledges that it fails to prove. If there is any, the verification shouldn't pass the proof.** The proof will be published if verifier passed it. Therefore, there cannot be any hole in the proof, even the proof openly acknowledges the hole.
 
 #### 2b. Check for genuine proof work (not just resource gathering)
 
@@ -264,6 +265,7 @@ Write ALL verification results to:
 | 1 | [description] | [YES/NO/PARTIAL] | [section reference or "Not found"] |
 
 **All questions addressed:** [YES / NO]
+**Any acknowledged gap/hole:** [YES / NO]
 
 ### 2b. Originality Check
 
