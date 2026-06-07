@@ -10,6 +10,7 @@ from utils import (
     MODEL_PROVIDERS,
     AGENT_NAMES,
     PIPELINE_AGENT_NAMES,
+    CODEX_EXECUTION_MODES,
     CODEX_REASONING_LEVELS,
     GEMINI_THINKING_LEVELS,
 )
@@ -125,6 +126,75 @@ def _render_codex_block(codex_cfg: dict) -> dict:
     }
 
 
+def _render_chatgpt_browser_block(browser_cfg: dict) -> dict:
+    st.sidebar.subheader("Codex Browser Mode")
+    chatgpt_model = st.sidebar.text_input(
+        "ChatGPT model note",
+        value=browser_cfg.get("chatgpt_model", "ChatGPT selected model in browser"),
+        key="chatgpt_browser_model_note",
+    )
+    project_context = st.sidebar.text_area(
+        "ChatGPT project/context note",
+        value=browser_cfg.get("project_context", ""),
+        key="chatgpt_browser_project_context",
+        height=80,
+    )
+    with st.sidebar.expander("Codex Browser Advanced"):
+        chrome_invocation = st.text_input(
+            "Chrome invocation",
+            value=browser_cfg.get("chrome_invocation", "@Chrome"),
+            key="chatgpt_browser_chrome_invocation",
+        )
+        max_retries = st.number_input(
+            "Max retries",
+            min_value=1,
+            max_value=10,
+            value=int(browser_cfg.get("max_retries", 2)),
+            key="chatgpt_browser_max_retries",
+        )
+        retry_delay = st.number_input(
+            "Retry delay seconds",
+            min_value=0,
+            max_value=300,
+            value=int(browser_cfg.get("retry_delay_seconds", 10)),
+            key="chatgpt_browser_retry_delay",
+        )
+        manual_wait = st.number_input(
+            "Manual wait seconds",
+            min_value=0,
+            max_value=86400,
+            value=int(browser_cfg.get("manual_wait_seconds", 0)),
+            key="chatgpt_browser_manual_wait",
+        )
+        manual_poll = st.number_input(
+            "Manual poll seconds",
+            min_value=1,
+            max_value=300,
+            value=int(browser_cfg.get("manual_poll_seconds", 5)),
+            key="chatgpt_browser_manual_poll",
+        )
+
+    supervisor = browser_cfg.get("supervisor", {})
+    if not isinstance(supervisor, dict):
+        supervisor = {}
+    return {
+        "supervisor": {
+            "provider": "codex",
+            "model": supervisor.get("model", "gpt-5.5"),
+            "reasoning_effort": supervisor.get("reasoning_effort", "xhigh"),
+        },
+        "browser": browser_cfg.get("browser", "chrome"),
+        "chrome_invocation": chrome_invocation,
+        "chatgpt_model": chatgpt_model,
+        "project_context": project_context,
+        "max_retries": int(max_retries),
+        "retry_delay_seconds": int(retry_delay),
+        "fallback": browser_cfg.get("fallback", "manual"),
+        "manual_wait_seconds": int(manual_wait),
+        "manual_poll_seconds": int(manual_poll),
+    }
+
+
 def _render_gemini_block(gemini_cfg: dict) -> dict:
     st.sidebar.subheader("Gemini (Google)")
     gemini_model = st.sidebar.text_input(
@@ -180,6 +250,11 @@ def _agent_block(name: str, agent_cfg: dict) -> dict:
     with container:
         st.markdown(f"**{name.replace('_', ' ').title()}**")
         cur_provider = agent_cfg.get("provider", "codex")
+        cur_execution_mode = agent_cfg.get("execution_mode", "direct")
+        # Backward compatibility with the earlier provider-level prototype.
+        if cur_provider == "chatgpt_browser":
+            cur_provider = "codex"
+            cur_execution_mode = "browser"
         if cur_provider not in MODEL_PROVIDERS:
             cur_provider = "codex"
         provider = st.selectbox(
@@ -197,7 +272,15 @@ def _agent_block(name: str, agent_cfg: dict) -> dict:
         reasoning_value = None
         thinking_value = None
         thinking_budget = None
+        execution_mode = None
         if provider == "codex":
+            cur_mode = cur_execution_mode if cur_execution_mode in CODEX_EXECUTION_MODES else "direct"
+            execution_mode = st.selectbox(
+                "Codex execution",
+                list(CODEX_EXECUTION_MODES),
+                index=CODEX_EXECUTION_MODES.index(cur_mode),
+                key=f"agent_{name}_codex_execution",
+            )
             opts = [_USE_GLOBAL, *CODEX_REASONING_LEVELS]
             cur = agent_cfg.get("reasoning_effort", "")
             if cur not in CODEX_REASONING_LEVELS:
@@ -231,6 +314,8 @@ def _agent_block(name: str, agent_cfg: dict) -> dict:
             )
 
     out: dict = {"provider": provider}
+    if provider == "codex" and execution_mode:
+        out["execution_mode"] = execution_mode
     if model_value.strip():
         out["model"] = model_value.strip()
     if reasoning_value and reasoning_value != _USE_GLOBAL:
@@ -253,6 +338,7 @@ def render_config_panel() -> dict:
     st.sidebar.header("Global Provider Defaults")
     claude_block = _render_claude_block(cfg.get("claude", {}))
     codex_block = _render_codex_block(cfg.get("codex", {}))
+    chatgpt_browser_block = _render_chatgpt_browser_block(cfg.get("chatgpt_browser", {}))
     gemini_block = _render_gemini_block(cfg.get("gemini", {}))
 
     st.sidebar.caption("Prover mode: decomposition (only mode supported)")
@@ -297,6 +383,7 @@ def render_config_panel() -> dict:
     result: dict = copy.deepcopy(cfg) if cfg else {}
     result["claude"] = claude_block
     result["codex"] = codex_block
+    result["chatgpt_browser"] = chatgpt_browser_block
     result["gemini"] = gemini_block
     result["prover"] = {"mode": "decomposition"}
     result["pipeline"] = {

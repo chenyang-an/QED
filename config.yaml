@@ -39,6 +39,33 @@ codex:
   model: "gpt-5.5"
   reasoning_effort: "xhigh"
 
+# --- ChatGPT Browser Bridge (Codex-supervised) ---
+# This is a Codex execution mode, not a separate normal model provider:
+# decomposition.models.* should use provider: "codex" with
+# execution_mode: "browser" to activate it.
+# Codex handles QED orchestration and asks Codex to delegate
+# each full QED agent step to logged-in ChatGPT through Chrome when available.
+# If Chrome/ChatGPT automation fails, it writes a manual_prompt.md file under
+# <output>/chatgpt_browser_runs/... and can optionally wait for manual_response.md.
+chatgpt_browser:
+  supervisor:
+    provider: "codex"
+    # Falls back to the global codex: section for cli_path/model/reasoning_effort.
+    model: "gpt-5.5"
+    reasoning_effort: "xhigh"
+  browser: "chrome"
+  chrome_invocation: "@Chrome"
+  # Leave generic to use whichever ChatGPT model is selected in the browser.
+  chatgpt_model: "ChatGPT selected model in browser"
+  # Optional: name a ChatGPT Project or paste reusable context that ChatGPT
+  # should use for each full QED step.
+  project_context: ""
+  max_retries: 2
+  retry_delay_seconds: 10
+  fallback: "manual"
+  manual_wait_seconds: 0      # 0 = write manual prompt and stop; set >0 to wait
+  manual_poll_seconds: 5
+
 # --- Gemini (Google) ---
 gemini:
   cli_path: "gemini"
@@ -66,7 +93,8 @@ prover:
 
 pipeline:
   # Each agent below is a dict with at least a `provider` key (claude, codex,
-  # or gemini). Optional fields override the global provider section for this
+  # or gemini). Codex roles can choose execution_mode: "direct" or "browser".
+  # Optional fields override the global provider section for this
   # agent only:
   #   model: "..."             # overrides {provider}.model
   #   reasoning_effort: "..."  # (codex only)
@@ -101,26 +129,34 @@ decomposition:
   # Per-agent model selection. Each entry is a dict like:
   #   decomposer:
   #     provider: "codex"
-  #     model: "gpt-5.5"           # optional — overrides global codex.model
-  #     reasoning_effort: "xhigh"  # optional — overrides global codex.reasoning_effort
+  #     execution_mode: "browser"    # or "direct"
+  #     reasoning_effort: "xhigh"
   # Unset knobs fall back to the global codex:/gemini:/claude: section.
   models:
     decomposer:
       provider: "codex"           # creates/revises proof decomposition plan
-      model: "gpt-5.5-pro"
+      execution_mode: "browser"
       reasoning_effort: "xhigh"
     single_prover:
       provider: "codex"           # executes decomposition plan, writes complete proof
-      model: "gpt-5.5"
+      execution_mode: "browser"
       reasoning_effort: "xhigh"
     regulator:
       provider: "codex"           # decides REVISE_PROOF/REVISE_PLAN/REWRITE after verification fails
+      execution_mode: "browser"
+      reasoning_effort: "xhigh"
     structural_verifier:
       provider: "codex"           # structural verification of proof (Phases 1-5)
+      execution_mode: "browser"
+      reasoning_effort: "xhigh"
     detailed_verifier:
       provider: "codex"           # detailed verification of proof (Phase 6)
+      execution_mode: "browser"
+      reasoning_effort: "xhigh"
     verdict:
       provider: "codex"           # final verdict on verification reports (DONE/CONTINUE)
+      execution_mode: "browser"
+      reasoning_effort: "xhigh"
 
 
 # =============================================================================

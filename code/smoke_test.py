@@ -274,7 +274,16 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
         if prov:
             providers_in_use.add(prov)
 
-    providers_in_use = {p for p in providers_in_use if p in {"claude", "codex", "gemini"}}
+    providers_in_use = {p for p in providers_in_use if p in {"claude", "codex", "gemini", "chatgpt_browser"}}
+    browser_mode_in_use = any(
+        isinstance(v, dict)
+        and v.get("provider", "").lower() == "codex"
+        and v.get("execution_mode") == "browser"
+        for v in list(decomp_models.values()) + [
+            pipeline_cfg_for_use.get("literature_survey"),
+            pipeline_cfg_for_use.get("proof_summary"),
+        ]
+    )
 
     # -------------------------------------------------------
     # Test 5: Claude CLI connectivity (provider-aware)
@@ -392,7 +401,7 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
     check("decomposition config present", bool(decomp_cfg),
           "Missing decomposition config")
 
-    valid_providers = {"claude", "codex", "gemini"}
+    valid_providers = {"claude", "codex", "gemini", "chatgpt_browser"}
 
     def _validate_role(label: str, role_cfg) -> None:
         if not isinstance(role_cfg, dict):
@@ -404,6 +413,11 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
         ok = isinstance(provider, str) and provider.lower() in valid_providers
         check(f"{label}.provider valid ({provider})",
               ok, f"Invalid or missing provider for {label}")
+        if isinstance(provider, str) and provider.lower() == "codex":
+            mode = role_cfg.get("execution_mode", "direct")
+            check(f"{label}.execution_mode valid ({mode})",
+                  mode in ("direct", "browser"),
+                  "Codex execution_mode must be 'direct' or 'browser'")
 
     # Validate decomposition model assignments
     decomp_models = decomp_cfg.get("models", {})
@@ -411,6 +425,15 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
                       "structural_verifier", "detailed_verifier", "verdict"]
     for agent in required_agents:
         _validate_role(f"decomposition.models.{agent}", decomp_models.get(agent))
+
+    if "chatgpt_browser" in providers_in_use or browser_mode_in_use:
+        cgb_cfg = config.get("chatgpt_browser", {})
+        check("chatgpt_browser config present", bool(cgb_cfg),
+              "Missing chatgpt_browser config")
+        supervisor = cgb_cfg.get("supervisor", {})
+        check("chatgpt_browser.supervisor is codex",
+              isinstance(supervisor, dict) and supervisor.get("provider", "codex") == "codex",
+              "chatgpt_browser currently requires supervisor.provider: codex")
 
     # Validate limits
     max_proof = decomp_cfg.get("max_proof_attempts", 3)
@@ -440,6 +463,11 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
     # Test 8: Non-Claude provider connectivity (when needed)
     # -------------------------------------------------------
     providers_to_test = {p for p in providers_in_use if p != "claude"}
+    if "chatgpt_browser" in providers_to_test or browser_mode_in_use:
+        # The browser bridge is Codex-supervised. Smoke-test Codex CLI only;
+        # live Chrome/ChatGPT delegation is intentionally skipped because it
+        # depends on logged-in browser state and can be expensive.
+        providers_to_test.add("codex")
 
     if providers_to_test:
         print(f"\n=== Test 8: Non-Claude provider connectivity (testing: {', '.join(sorted(providers_to_test))}) ===")
@@ -484,6 +512,9 @@ async def run_smoke_test(config: dict, config_path: str | None = None) -> bool:
             else:
                 check(f"Codex CLI '{codex_cli}' found", False,
                       "Install codex or switch decomposition.models.* away from codex")
+
+        if "chatgpt_browser" in providers_to_test or browser_mode_in_use:
+            print("  SKIP: ChatGPT browser live check -- requires logged-in Chrome/ChatGPT session")
 
         # --- Gemini ---
         if "gemini" in providers_to_test:
