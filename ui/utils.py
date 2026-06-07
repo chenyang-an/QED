@@ -22,6 +22,7 @@ GLOBAL_PROVE_HH = os.path.join(HUMAN_HELP_DIR, "additional_prove_human_help_glob
 GLOBAL_VERIFY_HH = os.path.join(HUMAN_HELP_DIR, "additional_verify_rule_global.md")
 
 MODEL_PROVIDERS = ("claude", "codex", "gemini")
+CODEX_EXECUTION_MODES = ("direct", "browser")
 
 DECOMP_DIR_NAME = "decomposition"
 

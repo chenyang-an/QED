@@ -689,7 +689,7 @@ def detect_decomposition_resume(output_dir: str) -> dict:
 def get_agent_role_cfg(config: dict, agent_name: str) -> dict:
     """Return the per-agent role config dict for *agent_name*.
 
-    Shape: ``{provider: 'codex'|'claude'|'gemini', model?: '...', ...knobs...}``.
+    Shape: ``{provider: 'codex'|'claude'|'gemini'|'chatgpt_browser', model?: '...', ...knobs...}``.
     The chosen provider's global section is overlaid with these overrides at
     call time (see :func:`model_runner.resolve_agent_provider_config`).
     """
@@ -699,7 +699,8 @@ def get_agent_role_cfg(config: dict, agent_name: str) -> dict:
     if not isinstance(role_cfg, dict) or "provider" not in role_cfg:
         raise ValueError(
             f"decomposition.models.{agent_name} must be a dict with a 'provider' key "
-            f"(e.g. {{provider: 'codex', model: 'gpt-5.5'}}). Got: {role_cfg!r}"
+            f"(e.g. {{provider: 'codex', model: 'gpt-5.5'}} or "
+            f"{{provider: 'chatgpt_browser'}}). Got: {role_cfg!r}"
         )
     return role_cfg
 
