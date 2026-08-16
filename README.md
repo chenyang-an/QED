@@ -24,9 +24,9 @@
 QED is a multi-agent pipeline that takes a mathematical problem statement in LaTeX and produces a rigorous natural-language proof. The pipeline orchestrates Codex (and optionally Claude and Gemini) through their respective CLIs via bash subprocesses (minimal extra dependencies required besides the coding CLI themselves). QED conducts the literature survey, decomposes the problem, executes the plan and verifies the proof. So far, QED has produced 5 works in the area of probabilty, PDE, algebraic geometry and inverse problems that are original and nontrivial according to expert evaluations.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=proofQED/QED&type=Date&theme=dark" />
-  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=proofQED/QED&type=Date" />
-  <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=proofQED/QED&type=Date" />
+  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=proofQED/QED&type=date&theme=dark&sealed_token=xdfol3Ik3lUq8TNJ73_UIHaIytdiz1R2bitdw_IC6AwHpxre4FD1ddUQd4XHiUB5Z5lbi2g-MEkz20sse5XE0n_31K4sg9RcvTCUU_MrfQ5Zv5JukB28XHTzKs1fUY_mL2j5Xq-Yb6PvMijRFwNIOmtXLenxGBBQh0idHThC3VoWy9BV5smUAyPwc70y" />
+  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=proofQED/QED&type=date&sealed_token=xdfol3Ik3lUq8TNJ73_UIHaIytdiz1R2bitdw_IC6AwHpxre4FD1ddUQd4XHiUB5Z5lbi2g-MEkz20sse5XE0n_31K4sg9RcvTCUU_MrfQ5Zv5JukB28XHTzKs1fUY_mL2j5Xq-Yb6PvMijRFwNIOmtXLenxGBBQh0idHThC3VoWy9BV5smUAyPwc70y" />
+  <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=proofQED/QED&type=date&sealed_token=xdfol3Ik3lUq8TNJ73_UIHaIytdiz1R2bitdw_IC6AwHpxre4FD1ddUQd4XHiUB5Z5lbi2g-MEkz20sse5XE0n_31K4sg9RcvTCUU_MrfQ5Zv5JukB28XHTzKs1fUY_mL2j5Xq-Yb6PvMijRFwNIOmtXLenxGBBQh0idHThC3VoWy9BV5smUAyPwc70y" />
 </picture>
 
 ## Math Research Problems Solved by QED, Verified by Domain Experts
